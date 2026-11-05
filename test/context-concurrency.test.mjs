@@ -214,7 +214,8 @@ test("atomic save exposes only complete old/new JSON, preserves mode, and cleans
   assert.ok(observed.observed.includes("old"));
   assert.ok(observed.observed.includes("new"));
   assert.equal(readResult(barrier, "writer").hookCalled, true);
-  assert.equal(statSync(contextPath).mode & 0o777, 0o640);
+  // Windows implements read-only/writeable, not POSIX group permission bits.
+  assert.equal(statSync(contextPath).mode & 0o777, process.platform === 'win32' ? 0o666 : 0o640);
   assert.deepEqual(readdirSync(dirname(contextPath)).filter((name) => name.includes(".tmp-") || name.endsWith(".lock")), []);
 
   const names = [];

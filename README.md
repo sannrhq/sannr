@@ -34,7 +34,8 @@ It runs locally, through MCP or the command line, with Claude Code, Codex or
 Cursor. Knowledge you commit travels with the repository; request evidence stays
 on the machine that recorded it. No account, no telemetry. The only thing it
 sends us is feedback, which is optional and asks first. You need Node 22 or
-newer on macOS or Linux; native Windows is not supported. See
+newer on macOS or Linux. Native Windows support is experimental in the source
+tree; published beta.1 predates these fixes. See [Windows setup](docs/install.md#windows-source-candidate),
 [privacy](docs/privacy.md) and [limitations](docs/limitations.md).
 
 ## Five minutes to a first recorded request

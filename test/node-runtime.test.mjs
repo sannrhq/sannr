@@ -26,7 +26,7 @@ const run = (cwd, env, ...args) => new Promise(resolveRun => {
   child.on('close', code => resolveRun({ code, stdout, stderr }));
 });
 
-test('a Homebrew upgrade can remove the old keg and the saved command still launches Node', t => {
+test('a Homebrew upgrade can remove the old keg and the saved command still launches Node', { skip: process.platform === 'win32' && 'Homebrew symlinks and shell launchers are POSIX-specific; native Node startup has separate coverage.' }, t => {
   const dir = fresh(t);
   const old = join(dir, 'Cellar/node/22.0.0/bin/node');
   const next = join(dir, 'Cellar/node/22.1.0/bin/node');
@@ -48,7 +48,7 @@ test('a Homebrew upgrade can remove the old keg and the saved command still laun
   assert.ok(JSON.parse(response.trim()).result.serverInfo);
 });
 
-test('Node selection retains a versioned formula, rejects foreign aliases, and never pins an unaliased keg', t => {
+test('Node selection retains a versioned formula, rejects foreign aliases, and never pins an unaliased keg', { skip: process.platform === 'win32' && 'Homebrew alias selection is POSIX-specific; native Node startup has separate coverage.' }, t => {
   const dir = fresh(t), old = join(dir, 'Cellar/node@22/22.0.0/bin/node');
   const alias = join(dir, 'opt/node@22/bin/node');
   for (const path of [old, alias]) mkdirSync(dirname(path), { recursive: true });

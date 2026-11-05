@@ -1,7 +1,8 @@
+import { unsafeAliasSync } from './helpers/unsafe-alias.mjs';
 import { LAYOUT } from "../lib/layout.mjs";
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, realpathSync, mkdirSync,  readFileSync, rmSync, symlinkSync, existsSync } from "node:fs";
+import { mkdtempSync, realpathSync, mkdirSync,  readFileSync, rmSync, existsSync } from "node:fs";
 import { writeFileSync } from "./helpers/layout-fixture.mjs";
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -97,7 +98,7 @@ test('H1-04 save_to refuses a symlink above an existing parent before fetching',
     ${clientImport}
     await assert.rejects(apiRequest({ path: '/file', save_to: join(root, 'alias', 'nested', 'out.bin') }), { code: 'SAVE_TO_UNSAFE_PATH' });
     assert.equal(calls, 0); assert.equal(fs.existsSync(join(root, 'outside', 'nested', 'out.bin')), false);`, {}, root => {
-    mkdirSync(join(root, 'outside', 'nested'), { recursive: true }); symlinkSync(join(root, 'outside'), join(root, 'alias'));
+    mkdirSync(join(root, 'outside', 'nested'), { recursive: true }); unsafeAliasSync(join(root, 'outside'), join(root, 'alias'));
   });
 });
 
@@ -105,7 +106,7 @@ test('H1-04 CLI feedback and map outputs refuse linked leaves', t => {
   const root = project(t), target = join(root, 'protected'); writeFileSync(target, 'preserve');
   writeFileSync(join(root, 'openapi.json'), JSON.stringify({ openapi: '3.0.0', info: { title: 'fixture', version: '1' }, paths: { '/items': { get: { responses: { '200': { description: 'ok' } } } } } }));
   for (const command of [['feedback', '--out', 'out.md'], ['map', '.', '--no-execute', '--out', 'out.md']]) {
-    symlinkSync(target, join(root, 'out.md'));
+    unsafeAliasSync(target, join(root, 'out.md'));
     const result = spawnSync(process.execPath, [join(repo, 'bin/cli.mjs'), ...command], { cwd: root, env: cleanEnv(root), encoding: 'utf8', timeout: 5000 });
     assert.equal(result.status, 1); assert.match(result.stderr, /OUTPUT_UNSAFE_PATH/);
     assert.equal(readFileSync(target, 'utf8'), 'preserve'); rmSync(join(root, 'out.md'));
@@ -115,7 +116,7 @@ test('H1-04 CLI feedback and map outputs refuse linked leaves', t => {
 test('H1-04 importer preflights every sidecar before writing the suite', t => {
   const root = project(t), target = join(root, 'protected'); writeFileSync(target, '{}');
   mkdirSync(join(root, LAYOUT.suites), { recursive: true }); writeFileSync(join(root, 'source.json'), JSON.stringify(collection));
-  symlinkSync(target, join(root, LAYOUT.suites, 'sample.provenance.json'));
+  unsafeAliasSync(target, join(root, LAYOUT.suites, 'sample.provenance.json'));
   const result = spawnSync(process.execPath, [join(repo, 'bin/cli.mjs'), 'import', 'source.json'], { cwd: root, env: cleanEnv(root), encoding: 'utf8', timeout: 5000 });
   assert.equal(result.status, 1); assert.match(result.stderr, /OUTPUT_UNSAFE_PATH/);
   assert.equal(readFileSync(target, 'utf8'), '{}'); assert.equal(existsSync(join(root, LAYOUT.suites, 'sample.json')), false);
@@ -123,14 +124,14 @@ test('H1-04 importer preflights every sidecar before writing the suite', t => {
 
 test('H1-04 workspace writer refuses linked sidecars without a partial batch', t => {
   const root = project(t), target = join(root, 'protected'); writeFileSync(target, 'preserve');
-  const out = join(root, 'out'); mkdirSync(out); symlinkSync(target, join(out, 'sample.report.md'));
+  const out = join(root, 'out'); mkdirSync(out); unsafeAliasSync(target, join(out, 'sample.report.md'));
   assert.throws(() => writeFlattenedWorkspace(out, flattenPostmanWorkspace({ collections: [collection] }), { direct: true }), { code: 'OUTPUT_UNSAFE_PATH' });
   assert.equal(readFileSync(target, 'utf8'), 'preserve'); assert.equal(existsSync(join(out, 'sample.json')), false);
 });
 
 test('H1-04 CI summary refuses a symlink above its parent', t => {
   const root = project(t); mkdirSync(join(root, 'outside', 'nested'), { recursive: true });
-  symlinkSync(join(root, 'outside'), join(root, 'alias'));
+  unsafeAliasSync(join(root, 'outside'), join(root, 'alias'));
   assert.throws(() => appendCiSummary(join(root, 'alias', 'nested', 'summary.md'), 'section'), { code: 'OUTPUT_UNSAFE_PATH' });
   assert.equal(existsSync(join(root, 'outside', 'nested', 'summary.md')), false);
 });
@@ -189,7 +190,7 @@ test('H1-10 capture README uses only scanned account metadata and preflights des
   setEnv(t, 'POSTMAN_API_KEY', 'synthetic-private-key'); const root = project(t);
   await capturePostman({ outputDir: root, account: synthetic, fetchImpl: async () => new Response('{}') });
   assert.equal(readFileSync(join(root, 'README.md'), 'utf8').includes(synthetic), false);
-  const target = join(root, 'protected'); writeFileSync(target, 'preserve'); rmSync(join(root, 'capture.json')); symlinkSync(target, join(root, 'capture.json'));
+  const target = join(root, 'protected'); writeFileSync(target, 'preserve'); rmSync(join(root, 'capture.json')); unsafeAliasSync(target, join(root, 'capture.json'));
   let calls = 0;
   await assert.rejects(capturePostman({ outputDir: root, fetchImpl: async () => { calls++; return new Response('{}'); } }), { code: 'OUTPUT_UNSAFE_PATH' });
   assert.equal(calls, 0); assert.equal(readFileSync(target, 'utf8'), 'preserve');
@@ -219,15 +220,16 @@ test('H1-12 token cache refuses links and replaces permissive cache modes', t =>
     globalThis.fetch = async url => String(url).includes('/token') ? new Response(JSON.stringify({ access_token: 'opaque-access-fixture', expires_in: 3600 })) : new Response('{}');
     ${clientImport} fs.mkdirSync(TOKEN_CACHE, { recursive: true });
     const key = join(TOKEN_CACHE, createHash('sha256').update(JSON.stringify([process.env.API_OAUTH_TOKEN_URL, process.env.TEST_CLIENT_ID, process.env.TEST_CLIENT_SECRET, null, null])).digest('hex').slice(0,32) + '.json');
-    const target = join(root, 'protected'); fs.writeFileSync(target, '{}'); fs.symlinkSync(target, key);
+    const target = join(root, 'protected'); fs.writeFileSync(target, '{}'); (process.platform === 'win32' ? fs.linkSync : fs.symlinkSync)(target, key);
     await apiRequest({ path: '/items' }); assert.equal(fs.readFileSync(target, 'utf8'), '{}');
-    assert.equal(fs.lstatSync(key).isSymbolicLink(), true);`, oauthEnv);
+    const alias = fs.lstatSync(key);
+    assert.equal(process.platform === 'win32' ? alias.nlink > 1 : alias.isSymbolicLink(), true);`, oauthEnv);
   probe(t, `const { createHash } = await import('node:crypto');
     globalThis.fetch = async url => String(url).includes('/token') ? new Response(JSON.stringify({ access_token: 'opaque-access-fixture', expires_in: 3600 })) : new Response('{}');
     ${clientImport} fs.mkdirSync(TOKEN_CACHE, { recursive: true });
     const key = join(TOKEN_CACHE, createHash('sha256').update(JSON.stringify([process.env.API_OAUTH_TOKEN_URL, process.env.TEST_CLIENT_ID, process.env.TEST_CLIENT_SECRET, null, null])).digest('hex').slice(0,32) + '.json');
     fs.writeFileSync(key, '{}', { mode: 0o644 }); await apiRequest({ path: '/items' });
-    assert.equal(fs.statSync(key).mode & 0o777, 0o600);`, oauthEnv);
+    assert.equal(fs.statSync(key).mode & 0o777, process.platform === 'win32' ? 0o666 : 0o600);`, oauthEnv);
 });
 
 test('H1-04 evidence protection and usage logging never follow linked files', t => {
@@ -239,7 +241,7 @@ test('H1-04 evidence protection and usage logging never follow linked files', t 
     assert.equal(fs.readFileSync(join(root, 'protected-log'), 'utf8'), 'preserve');`, {}, root => {
     mkdirSync(join(root, 'evidence'));
     for (const [target, link] of [['protected-ignore', 'evidence/.gitignore'], ['protected-log', 'usage.jsonl']]) {
-      writeFileSync(join(root, target), 'preserve'); symlinkSync(join(root, target), join(root, link));
+      writeFileSync(join(root, target), 'preserve'); unsafeAliasSync(join(root, target), join(root, link));
     }
   });
 });

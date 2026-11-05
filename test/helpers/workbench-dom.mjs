@@ -129,6 +129,7 @@ export function createWorkbenchDom({ product = 'Product' } = {}) {
 export function loadWorkbenchPage(handlers, { dark = false, product = 'Product', innerWidth } = {}) {
   const { document, dispatch } = createWorkbenchDom({ product });
   const copied = [], calls = [], windowListeners = new Map();
+  const pendingFetches = new Set();
   const media = { matches: dark, listeners: [], addEventListener(type, fn) { this.listeners.push(fn); } };
   const respond = async (path, body) => {
     if (path === '/pair/start') return { ok: true, result: { code: 'TEST-CODE', nonce: 'nonce' } };
@@ -143,10 +144,25 @@ export function loadWorkbenchPage(handlers, { dark = false, product = 'Product',
     removeEventListener(type, fn) { windowListeners.set(type, (windowListeners.get(type) ?? []).filter(item => item !== fn)); } };
   const context = createContext({ document, window, innerWidth,
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
-    matchMedia: () => media, setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms === 1200 ? 0 : ms); timer.unref?.(); return timer; }, clearTimeout,
-    fetch: async (path, options) => { const result = await respond(path, JSON.parse(options.body)); return { json: async () => result }; } });
+    matchMedia: () => media, setTimeout: (fn, ms) => {
+      // Pairing's simulated poll has no clock dependency. A real zero-delay
+      // Windows timer can outlast every settle tick and strand the fake page.
+      if (ms === 1200) { queueMicrotask(fn); return null; }
+      const timer = setTimeout(fn, ms); timer.unref?.(); return timer;
+    }, clearTimeout,
+    fetch: (path, options) => {
+      const request = respond(path, JSON.parse(options.body)).then(result => ({ json: async () => result }));
+      pendingFetches.add(request);
+      request.then(() => pendingFetches.delete(request), () => pendingFetches.delete(request));
+      return request;
+    } });
   runInContext(readFileSync(new URL('../../lib/workbench/workbench.js', import.meta.url), 'utf8'), context);
-  const settle = async (rounds = 30) => { for (let i = 0; i < rounds; i++) await new Promise(resolve => setImmediate(resolve)); };
+  const settle = async (rounds = 30) => { for (let i = 0; i < rounds; i++) {
+    // Disk-backed handlers can outlast a fixed number of event-loop ticks on
+    // Windows or a busy runner. Await the actual work before inspecting DOM.
+    await Promise.all([...pendingFetches]);
+    await new Promise(resolve => setImmediate(resolve));
+  } };
   const q = selector => document.querySelector(selector), all = selector => document.querySelectorAll(selector);
   return { document, context, copied, calls, media, settle, q, all,
     // A pointer click: mousedown, then click, as a browser delivers them. When

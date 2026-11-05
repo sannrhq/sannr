@@ -1,6 +1,7 @@
+import { unsafeAliasSync } from './helpers/unsafe-alias.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -48,7 +49,7 @@ test('inspector re-masks old private evidence, bounds output and never trusts re
   assert.ok(!JSON.stringify(read).includes('private-metadata'));
   assert.equal(read.recorded_redactions.replacements, null);
   assert.throws(() => inspectRecordedResponse(root, { runId: '../escape', stack: 'fixture' }), { code: 'EVIDENCE_ID_INVALID' });
-  symlinkSync(join(dir, `${runId}.json`), join(dir, 'run-link.json'));
+  unsafeAliasSync(join(dir, `${runId}.json`), join(dir, 'run-link.json'));
   assert.throws(() => inspectRecordedResponse(root, { runId: 'run-link', stack: 'fixture' }), { code: 'EVIDENCE_FILE_UNSAFE' });
 });
 
@@ -84,7 +85,7 @@ test('local appearance preserves custom ignore text; unsafe settings refuses bef
   assert.equal((await workbenchSnapshot(root)).settings.theme, 'paper');
   await assert.rejects(handlers.settings.run({ theme: 'paper', path: '../escape' }), { code: 'WORKBENCH_PARAMETERS_INVALID' });
   rmSync(join(dir, 'settings.json')); const outside = join(root, 'outside.json'); writeFileSync(outside, '{}');
-  symlinkSync(outside, join(dir, 'settings.json')); const before = readFileSync(join(dir, '.gitignore'), 'utf8');
+  unsafeAliasSync(outside, join(dir, 'settings.json')); const before = readFileSync(join(dir, '.gitignore'), 'utf8');
   await assert.rejects(handlers.settings.run({ theme: 'ink' }));
   assert.equal(readFileSync(join(dir, '.gitignore'), 'utf8'), before); assert.equal(readFileSync(outside, 'utf8'), '{}');
   await assert.rejects(handlers.saved.run({ action: 'run', ref: 'a', inputFile: '../outside.json' }), { code: 'SAVED_ACTION_FIELD_INVALID' });

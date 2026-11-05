@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
+import { runNpm } from '../scripts/npm-command.mjs';
 import { installedMcpLaunch, pinnedMcpPackage } from '../lib/advertisement.mjs';
 import { codexServerBlock, installedProjectEntry, mcpTargets, planRemoval, planRuntimeRepair, planTarget, projectEntry } from '../lib/connect.mjs';
 import { currentSetupBinding, setupBindingId } from '../lib/setup-binding.mjs';
@@ -120,13 +121,13 @@ test('version upgrade repairs owned launch PATH and keeps custom PATH intact', t
   assert.ok(launch.env?.PATH);
   assert.doesNotMatch(launch.env.PATH, /_npx|Cellar|\\.nvm/);
   const desired = projectEntry(root, {}, { launch, env: { API_USAGE_LOG: '' } });
-  const prior = structuredClone(desired); prior.args[2] = `--package=${NPM_PACKAGE}@0.1.0-alpha.3`;
+  const prior = structuredClone(desired); prior.args[prior.args.findIndex(arg => arg.startsWith('--package='))] = `--package=${NPM_PACKAGE}@0.1.0-alpha.3`;
   prior.env.API_SETUP_BINDING = setupBindingId(root, prior);
   for (const target of mcpTargets(root)) {
     assert.equal(planRuntimeRepair(targetText(target, prior), target, desired).action, 'repair');
     const custom = structuredClone(prior); custom.env.PATH += ':/team/custom';
     assert.equal(planRuntimeRepair(targetText(target, custom), target, desired).action, 'refused');
-    const customCommand = structuredClone(prior); customCommand.command = '/team/custom/npx';
+    const customCommand = structuredClone(prior); customCommand.command = join('/team/custom', basename(prior.command));
     assert.equal(planRuntimeRepair(targetText(target, customCommand), target, desired).action, 'refused');
   }
 });
@@ -169,6 +170,10 @@ test('context pointers advertise only a matching executable and bound exact pack
 });
 
 function command(command, args, { cwd, env, input } = {}) {
+  if (process.platform === 'win32' && command === 'npx') {
+    command = process.execPath;
+    args = [join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npx-cli.js'), ...args];
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
     let stdout = '', stderr = '';
@@ -190,7 +195,7 @@ test('actual pinned MCP initializes after cache prune and tag movement despite a
   for (const file of ['bin', 'lib', 'skill', 'server.mjs']) cpSync(join(ROOT, file), join(pkg, file), { recursive: true });
   const meta = { name: NPM_PACKAGE, version: VERSION, type: 'module', bin: { [PRODUCT]: './bin/cli.mjs' }, files: ['bin/', 'lib/', 'skill/', 'server.mjs'], scripts: { postinstall: 'node -e "process.exit(89)"' } };
   write(join(pkg, 'package.json'), JSON.stringify(meta));
-  const packed = JSON.parse(execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', root], { cwd: pkg, encoding: 'utf8' }))[0];
+  const packed = JSON.parse(runNpm(['pack', '--ignore-scripts', '--json', '--pack-destination', root], { cwd: pkg, encoding: 'utf8' }))[0];
   const tarball = readFileSync(join(root, packed.filename));
   const integrity = 'sha512-' + createHash('sha512').update(tarball).digest('base64');
   const hits = []; let alpha = VERSION;
@@ -214,13 +219,15 @@ test('actual pinned MCP initializes after cache prune and tag movement despite a
   assert.equal(pinnedMcpPackage(entry), `${NPM_PACKAGE}@${VERSION}`);
   assert.doesNotMatch(JSON.stringify(entry), /_npx|Cellar/);
   const original = entry.env.API_SETUP_BINDING;
-  assert.equal(currentSetupBinding(repo, discoverMcpRegistrations(repo)), original);
+  assert.equal(currentSetupBinding(repo, discoverMcpRegistrations(repo)), original,
+    JSON.stringify({ entry, registrations: discoverMcpRegistrations(repo), recomputed: setupBindingId(repo, entry) }));
   // A repo-local older package/bin must not supersede the pinned MCP package.
   const foreign = join(repo, 'node_modules', ...NPM_PACKAGE.split('/'));
   write(join(foreign, 'package.json'), JSON.stringify({ ...meta, version: '0.0.1' }));
   write(join(foreign, 'bin/cli.mjs'), '#!/usr/bin/env node\nprocess.stderr.write("FOREIGN_BIN_EXECUTED"); process.exit(97);\n');
   mkdirSync(join(repo, 'node_modules/.bin'), { recursive: true });
-  symlinkSync(join(foreign, 'bin/cli.mjs'), join(repo, 'node_modules/.bin', PRODUCT));
+  if (process.platform === 'win32') write(join(repo, 'node_modules/.bin', `${PRODUCT}.cmd`), `@echo off\r\n"${process.execPath}" "${join(foreign, 'bin/cli.mjs')}" %*\r\n`);
+  else symlinkSync(join(foreign, 'bin/cli.mjs'), join(repo, 'node_modules/.bin', PRODUCT));
   rmSync(cache, { recursive: true, force: true }); alpha = '99.0.0';
   assert.equal(currentSetupBinding(repo, discoverMcpRegistrations(repo)), original);
   const input = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'prune-fixture', version: '1' } } }) + '\n' +

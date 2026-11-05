@@ -17,7 +17,7 @@ const run = (f, args) => new Promise((resolve, reject) => execFile(process.execP
   { cwd: f.dir, env: f.env, timeout: 15000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => error ? reject(new Error(`Fixture child failed (${error.code}): ${stderr.slice(0, 500)}`)) : resolve(stdout)));
 async function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'request-origin-'));
-  const seen = [];
+  const seen = [], children = [];
   const server = createServer((req, res) => {
     seen.push({ method: req.method, path: req.url });
     let text = ''; req.on('data', chunk => { text += chunk; });
@@ -28,7 +28,14 @@ async function fixture(t) {
     });
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => { await new Promise(resolve => server.close(resolve)); rmSync(dir, { recursive: true, force: true }); });
+  t.after(async () => {
+    for (const child of children) if (child.exitCode === null && child.signalCode === null) {
+      await new Promise(resolve => { child.once('close', resolve); child.kill(); });
+    }
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  });
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   const contract = join(dir, 'openapi.json');
   writeFileSync(contract, JSON.stringify({ openapi: '3.0.0', info: { title: 'fixture', version: '1' }, paths: { '/health': { get: { responses: { 200: { description: 'ok' } } } } } }));
@@ -36,7 +43,7 @@ async function fixture(t) {
   writeFileSync(config, JSON.stringify({ default: 'fixture', environments: { fixture: { baseUrl, contract } } }));
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('API_'))), HOME: dir,
     API_CONFIG: config, API_CONTEXT_DIR: dir, API_CONTEXT_OFF: '1', API_EVIDENCE: join(dir, 'evidence'), API_USAGE_LOG: join(dir, 'usage.jsonl'), API_FRICTION_OFF: '1' };
-  return { dir, env, baseUrl, seen, evidence: () => readdirSync(join(dir, 'evidence')).filter(x => /^run-.*\.json$/.test(x)).map(x => JSON.parse(readFileSync(join(dir, 'evidence', x), 'utf8'))) };
+  return { dir, env, baseUrl, seen, children, evidence: () => readdirSync(join(dir, 'evidence')).filter(x => /^run-.*\.json$/.test(x)).map(x => JSON.parse(readFileSync(join(dir, 'evidence', x), 'utf8'))) };
 }
 
 test('one request engine stamps ordinary, learn, probe, batch and protocol evidence without trusting public fields', async t => {
@@ -94,6 +101,7 @@ test('actual CLI request carries its own origin; unbound concrete paths are not 
 test('actual MCP request and envelope stamps cannot be forged through request JSON', { timeout: 15000 }, async t => {
   const f = await fixture(t);
   const child = spawn(process.execPath, [join(root, 'server.mjs')], { cwd: f.dir, env: f.env, stdio: ['pipe', 'pipe', 'pipe'] });
+  f.children.push(child);
   child.stderr.resume();
   const pending = new Map(); let next = 0;
   const lines = createInterface({ input: child.stdout });

@@ -797,7 +797,10 @@ function unwirePointers(root) {
 // changes; reversible by `unwire`, which removes exactly what it recognises as
 // ours and nothing else.
 
-const rel = (root, p) => (p.startsWith(`${root}/`) ? p.slice(root.length + 1) : p);
+const rel = (root, p) => {
+  const path = relative(root, p);
+  return path && !isAbsolute(path) && path !== '..' && !path.startsWith(`..${sep}`) ? path.split(sep).join('/') : p;
+};
 
 async function cmdMigrate(argv) {
   const options = { splits: [] };
@@ -1365,7 +1368,7 @@ async function cmdConnect(argv, { silent = false, selectedContract, createdStack
   const plannedFiles = [...new Map([
     ...createdStackFiles.map(path => [join(root, path), { path, action: 'created' }]),
     ...pendingWrites.map(target => [target.path, {
-      path: target.path.startsWith(root + "/") ? rel(root, target.path) : target.path,
+      path: rel(root, target.path),
       action: target.removal || target.row?.action === "would remove" ? "removed"
         : existsSync(target.path) ? "updated" : "created",
     }]),
@@ -3935,12 +3938,13 @@ function cmdVerdict(argv) {
   let probe;
   if (f.probe !== undefined) {
     const p = resolve(root, f.probe);
-    if (!p.startsWith(root + "/"))
+    const localProbe = relative(root, p);
+    if (!localProbe || isAbsolute(localProbe) || localProbe === '..' || localProbe.startsWith(`..${sep}`))
       die("PROBE_OUTSIDE_REPO", `${f.probe} resolves outside ${root}.`, "The probe must be committed with the repo, or re-running it is someone else's filesystem.");
     if (!existsSync(p)) die("PROBE_NOT_FOUND", `No probe envelope at ${p}.`, "Commit the envelope that reproduces the reason, then record the verdict.");
     try { JSON.parse(readFileSync(p, "utf8")); }
     catch { die("PROBE_NOT_JSON", `${f.probe} is not parseable JSON.`, "The probe must be a re-runnable envelope (the standard request envelope), not prose."); }
-    probe = p.slice(root.length + 1);
+    probe = localProbe.split(sep).join('/');
   }
 
   // Provenance: who WROTE this verdict, and when — distinct from decided_by
@@ -5355,7 +5359,8 @@ async function cmdDoctor(argv, { collect = false } = {}) {
   if (collect) return report;
   if (argv.includes('--json')) {
     console.log(JSON.stringify(report, null, 1));
-    process.exit(failed ? 1 : 0);
+    process.exitCode = failed ? 1 : 0;
+    return;
   }
 
   console.log(`${CLI_NAME} doctor — ${root}${configuredTarget ? `\n  ${apiProbe.target_source === "configured" ? requestTargetLine({ ...cfg, baseUrl: configuredTarget.base_url }) : `onboarding ${apiProbe.target_source}: ${configuredTarget.base_url}`}` : ""}\n`);
@@ -5366,7 +5371,7 @@ async function cmdDoctor(argv, { collect = false } = {}) {
   const warns = checks.filter((c) => c.state === "WARN").length;
   if (zenLine) console.log(zenLine);
   console.log(`\n${doctorSummaryLine(failed, warns)}`);
-  process.exit(failed ? 1 : 0);
+  process.exitCode = failed ? 1 : 0;
 }
 
 // --- receipt ---------------------------------------------------------------
