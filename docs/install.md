@@ -5,33 +5,21 @@ coding host loads the MCP server, how commands are pinned, and how to repair,
 upgrade or remove an installation. For the first run, start with the
 [quickstart](quickstart.md).
 
-You need macOS or Linux, Node 22 or newer with npm, and Claude Code, Codex or
-Cursor. Native Windows has an experimental source candidate described below.
-No account, API contract or
+You need macOS, Linux or Windows, Node 22 or newer with npm, and Claude Code,
+Codex or Cursor. Windows needs no WSL; the [Windows](#windows) section below
+names the command form to use in PowerShell. No account, API contract or
 credentials are needed for setup.
 
-## Windows source candidate
+## Windows
 
-The published `0.1.0-beta.1` package predates native Windows fixes. To try the
-current source on Windows, use Node 22+ and PowerShell or `cmd.exe`. Keep any
-older checkout and its work intact; use a separate checkout or worktree for
-this candidate.
-
-From the candidate's root, run `npm ci --ignore-scripts --no-audit --no-fund`,
-then `npm pack --pack-destination <local-artifact-directory>`. In each target
-repository install that exact local tarball as a development dependency and
-run:
+Native Windows is supported from `0.1.0-beta.2` with Node 22 or newer, from
+PowerShell, `cmd.exe` or Git Bash. Install from npm exactly as on the other
+platforms (see [Install from npm](#install-from-npm)), then run:
 
 ```powershell
 node .\node_modules\@sannr\sannr\bin\cli.mjs connect
 node .\node_modules\@sannr\sannr\bin\cli.mjs doctor --offline
 ```
-
-Installing a tarball records its path in the manifest; use a team-accessible
-artifact path if committing it. For an existing locked project,
-`npm install --no-save --package-lock=false <tarball>` tests the candidate
-locally without changing its manifest; a later `npm ci` restores the locked
-release.
 
 npm puts three launchers in `node_modules\.bin`: `sannr` (a POSIX shell
 script), `sannr.cmd` and `sannr.ps1`. In PowerShell,
@@ -71,10 +59,13 @@ and lexes POSIX shell syntax. On Windows it therefore covers Bash commands
 run through Git Bash, not Claude Code's PowerShell tool; without Git Bash,
 Claude Code offers only the PowerShell tool and the hook never fires.
 
-This candidate is verified separately from the published release. Its Windows
-CI lanes cover core safety and native CLI/MCP/Workbench scenarios; they are
-not a full release or native browser qualification. Restart the coding host
-after setup and compare the new repository binding before claiming activation.
+What is verified on Windows: the repository's CI runs the core safety set and
+the native CLI, MCP and Workbench scenarios on `windows-latest` with Node 22
+and 24 for every change, and the full product suite on Windows is a manual CI
+dispatch rather than a per-change gate. Browser behavior, the Claude Code hook
+firing inside Claude Code and the Workbench opener are not exercised by CI.
+Restart the coding host after setup and compare the new repository binding
+before claiming activation.
 
 ## Install from npm
 
@@ -101,7 +92,7 @@ npm install --save-dev @sannr/sannr
 With a local install, every command Sannr writes into your repository (the
 pointer block, the installed skills) uses `./node_modules/.bin/sannr`, with one
 pointer line giving the PowerShell form
-`node ./node_modules/@sannr/sannr/bin/cli.mjs` ([why](#windows-source-candidate)), the MCP
+`node ./node_modules/@sannr/sannr/bin/cli.mjs` ([why](#windows)), the MCP
 registration starts the local `server.mjs` with no npm download, and the
 installed skills can link to the package's `docs/` with relative paths. Use
 `--omit=optional` to leave out the pinned protocol libraries (GraphQL,

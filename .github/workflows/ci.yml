@@ -1,7 +1,8 @@
 # Routine CI runs core safety only; full qualification is an explicit manual
 # dispatch or a release gate. No artifacts, release or publication here.
 # Keep Package gates as the existing required check name on main.
-# Windows uses bounded core/native lanes rather than a serial full product run.
+# Windows runs bounded core/native lanes on every PR; the serial full product run
+# on Windows is the manual windows_full dispatch input.
 name: CI
 
 on:
@@ -12,6 +13,10 @@ on:
     inputs:
       full:
         description: Run all product regressions, truth, and local stress instead of core safety
+        type: boolean
+        default: false
+      windows_full:
+        description: Also run every product regression on Windows (Node 22 and 24); slow, opt-in only
         type: boolean
         default: false
 
@@ -55,6 +60,33 @@ jobs:
           "### Windows $env:WINDOWS_TEST_LANE — Node ${{ matrix.node }}" >> $env:GITHUB_STEP_SUMMARY
           "Scope: the named lane, not full product or release qualification." >> $env:GITHUB_STEP_SUMMARY
           Select-String -Path windows.log -Pattern '^# (tests|pass|fail|cancelled|skipped|todo) ', '^not ok ', '# SKIP' | ForEach-Object { $_.Line } >> $env:GITHUB_STEP_SUMMARY
+          exit $testExit
+  windows-full:
+    name: Windows full product suite (Node ${{ matrix.node }})
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.windows_full }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install pinned dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run every product regression on Windows
+        shell: pwsh
+        run: |
+          npm run test:full 2>&1 | Tee-Object -FilePath windows-full.log
+          $testExit = $LASTEXITCODE
+          "### Windows full product suite — Node ${{ matrix.node }}" >> $env:GITHUB_STEP_SUMMARY
+          "Scope: every product regression file on windows-latest; not truth, stress or release packaging." >> $env:GITHUB_STEP_SUMMARY
+          Select-String -Path windows-full.log -Pattern '^# (tests|pass|fail|cancelled|skipped|todo) ', '^not ok ', '# SKIP' | ForEach-Object { $_.Line } >> $env:GITHUB_STEP_SUMMARY
           exit $testExit
   gates:
     name: Package gates (Node ${{ matrix.node }})
