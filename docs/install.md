@@ -34,6 +34,18 @@ Windows file privacy relies on the containing directories' NTFS ACLs; Node's
 POSIX permission bits do not describe those ACLs. Keep private evidence and
 local credentials in directories private to your Windows account.
 
+The optional `connect --claude-hook` PreToolUse hook is written to
+`.claude/settings.local.json` in Claude Code's exec form on Windows: `command`
+is the Node executable and `args` holds the hook script and its generated
+arguments, so Claude Code spawns it without Git Bash or PowerShell. On macOS
+and Linux it remains a single shell-form `command` string. `connect`,
+`unwire` and the ownership check recognize either form on any platform; on
+Windows, an unedited shell-form entry from an earlier connect is rewritten to
+exec form (action `update`). The hook matches only Claude Code's `Bash` tool
+and lexes POSIX shell syntax. On Windows it therefore covers Bash commands
+run through Git Bash, not Claude Code's PowerShell tool; without Git Bash,
+Claude Code offers only the PowerShell tool and the hook never fires.
+
 This candidate is verified separately from the published release. Its Windows
 CI lanes cover core safety and native CLI/MCP/Workbench scenarios; they are
 not a full release or native browser qualification. Restart the coding host

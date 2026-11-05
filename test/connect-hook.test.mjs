@@ -23,7 +23,9 @@ import {
   claudeHookEntry,
   configuredBaseUrls,
   inspectShellHttp,
+  planClaudeHook,
   planClaudeHookRemoval,
+  renderClaudeHook,
   renderClaudeHookCommand,
 } from "../lib/claude-hook.mjs";
 
@@ -344,6 +346,117 @@ test("unwire admits only a prior env-base snapshot, never edited runtime or guid
     assert.equal(planClaudeHookRemoval(installedThenEdited, original).action, "left",
       `unwire deleted a hook whose ${Object.keys(changed)[0]} was edited`);
   }
+});
+
+const FORM_FIXTURE = { nodePath: "/usr/bin/node", hookPath: "/repo/lib/claude-hook.mjs",
+  configPath: "/repo/api-environments.json", doctor: "npx tool doctor",
+  pinnedBaseUrls: ["https://api.example.test/v1"] };
+
+test("POSIX hook output stays byte-identical to the shipped shell form", () => {
+  // Pinned from the renderer as shipped before the Windows exec form existed.
+  const shipped = "'/usr/bin/node' '/repo/lib/claude-hook.mjs' '--managed-shell-http-intercept' " +
+    "'L3JlcG8vYXBpLWVudmlyb25tZW50cy5qc29u' 'bnB4IHRvb2wgZG9jdG9y' " +
+    "'WyJodHRwczovL2FwaS5leGFtcGxlLnRlc3QvdjEiXQ==' " +
+    "'13e3d7345e183391464f7ee6491377eb75c9958fc0cfb10b736ca3e001d20fc5'";
+  assert.equal(renderClaudeHookCommand(FORM_FIXTURE), shipped);
+  for (const platform of ["linux", "darwin"]) {
+    const hook = renderClaudeHook({ ...FORM_FIXTURE, platform });
+    assert.equal(JSON.stringify(claudeHookEntry(hook)), JSON.stringify(claudeHookEntry(shipped)),
+      `${platform} entry bytes changed`);
+    assert.equal(JSON.stringify(hook), JSON.stringify({ type: "command", command: shipped, timeout: 5 }));
+  }
+  const text = `${JSON.stringify({ hooks: { PreToolUse: [claudeHookEntry(shipped)] } }, null, 2)}\n`;
+  assert.equal(planClaudeHook(text, renderClaudeHook({ ...FORM_FIXTURE, platform: "linux" })).action,
+    "unchanged", "an existing POSIX install was reported as locally different");
+});
+
+test("Windows hook is exec form: node as command and the generated words as args", () => {
+  const win = { nodePath: "C:\\Program Files\\nodejs\\node.exe",
+    hookPath: "C:\\work\\it's repo\\node_modules\\pkg\\lib\\claude-hook.mjs",
+    configPath: "C:\\work\\it's repo\\.cfg\\api-environments.json", doctor: "npx tool doctor",
+    pinnedBaseUrls: ["https://api.example.test/v1"] };
+  const hook = renderClaudeHook({ ...win, platform: "win32" });
+  assert.deepEqual(Object.keys(hook), ["type", "command", "args", "timeout"]);
+  assert.equal(hook.type, "command");
+  assert.equal(hook.timeout, 5);
+  assert.equal(hook.command, win.nodePath, "exec form must spawn node.exe itself, not a shell");
+  assert.equal(hook.args.length, 6);
+  assert.equal(hook.args[0], win.hookPath, "Windows paths must pass through unquoted");
+  assert.equal(hook.args[1], "--managed-shell-http-intercept");
+  assert.ok(hook.args.every((arg) => !arg.startsWith("'")), "exec args carry shell quoting");
+  const quote = (word) => `'${word.replaceAll("'", `'"'"'`)}'`;
+  assert.equal([hook.command, ...hook.args].map(quote).join(" "), renderClaudeHookCommand(win),
+    "the two forms disagree on the generated words");
+  assert.equal(claudeHookEntry(hook).matcher, "Bash");
+});
+
+test("both hook forms are recognized as unchanged and removable on every platform", () => {
+  const exec = renderClaudeHook({ ...FORM_FIXTURE, platform: "win32" });
+  const shell = renderClaudeHook({ ...FORM_FIXTURE, platform: "linux" });
+  const team = { matcher: "Bash", hooks: [{ type: "command", command: "./team-policy.sh" }] };
+  const textFor = (hook) => `${JSON.stringify({ permissions: { allow: ["Read"] },
+    hooks: { PreToolUse: [team, claudeHookEntry(hook)] } }, null, 2)}\n`;
+
+  const created = planClaudeHook(null, exec);
+  assert.equal(created.action, "create");
+  assert.deepEqual(JSON.parse(created.text).hooks.PreToolUse, [claudeHookEntry(exec)]);
+  assert.equal(planClaudeHook(textFor(exec), exec).action, "unchanged");
+  // Exec form also runs outside Windows; a POSIX connect leaves it alone.
+  assert.equal(planClaudeHook(textFor(exec), shell).action, "unchanged");
+
+  // A shell-form install opened on Windows is the same owned entry; it is
+  // rewritten in place to exec form because PowerShell cannot run it.
+  const upgraded = planClaudeHook(textFor(shell), exec);
+  assert.equal(upgraded.action, "update");
+  const doc = JSON.parse(upgraded.text);
+  assert.deepEqual(doc.permissions, { allow: ["Read"] });
+  assert.deepEqual(doc.hooks.PreToolUse, [team, claudeHookEntry(exec)]);
+
+  for (const hook of [exec, shell]) {
+    const removed = planClaudeHookRemoval(textFor(hook));
+    assert.equal(removed.action, "removed", `${hook.args ? "exec" : "shell"} form not removable`);
+    assert.deepEqual(JSON.parse(removed.text).hooks.PreToolUse, [team]);
+    assert.equal(planClaudeHookRemoval(`${JSON.stringify({ hooks: { PreToolUse: [claudeHookEntry(hook)] } })}\n`)
+      .text, null);
+  }
+});
+
+test("edited exec-form hooks are locally different: never replaced or removed", () => {
+  const exec = renderClaudeHook({ ...FORM_FIXTURE, platform: "win32" });
+  const other = renderClaudeHook({ ...FORM_FIXTURE, doctor: "team-owned doctor", platform: "win32" });
+  const edits = [
+    { ...exec, command: "C:\\team\\node.exe" },
+    { ...exec, args: [...exec.args.slice(0, 5), other.args[5]] },
+    { ...exec, args: [...exec.args.slice(0, 3), other.args[3], ...exec.args.slice(4)] },
+    { ...exec, args: [...exec.args, "--extra"] },
+    { ...exec, shell: "powershell" },
+    { ...exec, timeout: 30 },
+  ];
+  for (const edited of edits) {
+    const text = JSON.stringify({ hooks: { PreToolUse: [claudeHookEntry(edited)] } });
+    assert.equal(planClaudeHookRemoval(text).action, "left", `removed edited ${JSON.stringify(edited)}`);
+    for (const platform of ["win32", "linux"])
+      assert.equal(planClaudeHook(text, renderClaudeHook({ ...FORM_FIXTURE, platform })).action, "conflict",
+        `replaced edited ${JSON.stringify(edited)} on ${platform}`);
+  }
+});
+
+test("exec-form hook runs with no shell and denies an own-API curl", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "hook exec ' $() `-")));
+  const config = join(dir, "config ' $().json");
+  writeFileSync(config, JSON.stringify({ environments: { x: { baseUrl: "https://api.example.test/v1" } } }));
+  const hook = renderClaudeHook({ hookPath: join(ROOT, "lib", "claude-hook.mjs"), configPath: config,
+    doctor: `${CLI_NAME} doctor`, platform: "win32" });
+  // Claude Code's exec form: spawn `command` directly with `args` as argv.
+  const run = (command) => spawnSync(hook.command, hook.args, { encoding: "utf8", shell: false,
+    input: JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } }) });
+  const denied = run("curl https://api.example.test/v1/orders");
+  assert.equal(denied.status, 0, denied.stderr);
+  assert.equal(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision, "deny");
+  const other = run("curl https://other.example.test/x");
+  assert.equal(other.status, 0, other.stderr);
+  assert.equal(other.stdout, "");
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test("hook planning refuses malformed, linked, and edited managed settings without clobber", () => {

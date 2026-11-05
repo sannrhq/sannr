@@ -10,7 +10,9 @@ see [SUPPORT.md](../SUPPORT.md).
   the source tree; the published beta.1 package predates the native fixes. See
   [Windows source candidate](install.md#windows-source-candidate) for installation,
   test scope and NTFS permission limits. WSL is not required by this candidate
-  and has not been part of its testing.
+  and has not been part of its testing. The optional `--claude-hook` checks
+  only Claude Code's Bash tool, so on Windows it does not cover commands run
+  through Claude Code's PowerShell tool.
 - Claude Code, Codex and Cursor are the hosts `connect` registers. Cursor is
   detected only when a `.cursor/` directory already exists. Other MCP hosts can
   point at `sannr mcp serve` by hand, but setup does not write their files.

@@ -1002,7 +1002,7 @@ async function cmdConnect(argv, { silent = false, selectedContract, createdStack
   const { materializeCiArtifacts, CI_INSTALL_DEFAULT } = await import("../lib/ci-workflow.mjs");
   const { CLAUDE_HOOK_SETTINGS, claudeHookFileProblem,
     claudeHookTarget, configuredBaseUrls,
-    planClaudeHook, policyBaseUrl, renderClaudeHookCommand } =
+    planClaudeHook, policyBaseUrl, renderClaudeHook } =
     await import("../lib/claude-hook.mjs");
 
   const { planClaudeHookIgnore, applyClaudeHookIgnore, claudeHookIgnoreReport } =
@@ -1089,7 +1089,8 @@ async function cmdConnect(argv, { silent = false, selectedContract, createdStack
   const configuredHookUrls = cfg.file && existsSync(cfg.file)
     ? configuredBaseUrls(readFileSync(cfg.file, "utf8"), pinnedBaseUrls)
     : configuredBaseUrls("{}", pinnedBaseUrls);
-  const hookCommand = renderClaudeHookCommand({ configPath: cfg.file ?? "",
+  // Shell form on POSIX; exec form (node + args, no shell) on Windows.
+  const hookCommand = renderClaudeHook({ configPath: cfg.file ?? "",
     doctor: `${localCli} doctor`, pinnedBaseUrls });
   let hookPlan = null;
   let hookIgnorePlan = null;

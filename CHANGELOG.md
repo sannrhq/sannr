@@ -10,6 +10,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
 
 ## [Unreleased]
 
+- `connect --claude-hook` writes the Claude Code hook in exec form on Windows
+  (`command` is Node, `args` the generated words) so it runs without a shell;
+  the shell-form string PowerShell could not run is rewritten in place. macOS
+  and Linux output is unchanged. Recognition, `unwire` and conflict checks
+  accept both forms on every platform. The hook still covers only the Bash
+  tool, not Claude Code's PowerShell tool.
+
 ## [0.1.0-beta.1] - 2026-11-03
 
 - First public source release at github.com/sannrhq/sannr; earlier entries were
