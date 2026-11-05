@@ -12,10 +12,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  MCP_SERVER_KEY, POINTER_BEGIN, POINTER_END, POINTER_CLI_NAME, PRODUCT, FEEDBACK_ORIGIN,
+  MCP_SERVER_KEY, POINTER_BEGIN, POINTER_END, POINTER_CLI_NAME, POINTER_POWERSHELL_CLI_NAME, PRODUCT, FEEDBACK_ORIGIN,
 } from "../lib/brand.mjs";
 import { POINTER_FILES } from "../lib/capabilities.mjs";
-import { advertisementPlan } from "../lib/advertisement.mjs";
+import { advertisementPlan, powershellCommandHint } from "../lib/advertisement.mjs";
 import { SKILL_SOURCES, SKILL_TARGETS, renderSkill, skillName } from "../lib/connect.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -161,6 +161,17 @@ test("an executable repo-local shim enables only the portable committed command 
     assert.deepEqual(report.omitted, []);
     assert.ok(report.note.includes(`\`${POINTER_CLI_NAME} connect\``),
       "teammate setup must use the verified portable invocation");
+    // PowerShell guidance is terminal-only and Windows-only; both branches run here.
+    const plan = advertisementPlan(dir);
+    if (process.platform !== "win32") assert.equal(report.powershell, undefined);
+    assert.equal(powershellCommandHint(plan, { platform: "linux" }), null);
+    assert.equal(powershellCommandHint(plan, { platform: "darwin" }), null);
+    const hint = powershellCommandHint(plan, { platform: "win32" });
+    assert.ok(hint.startsWith(`In PowerShell, run ${POINTER_POWERSHELL_CLI_NAME} or ${plan.local.command} in place of ${POINTER_CLI_NAME};`), hint);
+    assert.match(hint, /RemoteSigned/);
+    assert.equal(powershellCommandHint({ ...plan, portable: { ...plan.portable, available: false } }, { platform: "win32" }), null);
+    assert.equal(powershellCommandHint({ ...plan, portable: { command: "npx --yes pkg@1.0.0", available: true } }, { platform: "win32" }), null);
+    assert.doesNotMatch(managedBlock(dir), /RemoteSigned/, "the policy hint never enters committed bytes");
     execFileSync("/bin/sh", ["-c", `${POINTER_CLI_NAME} doctor --help >/dev/null`],
       { cwd: dir, env, stdio: "pipe" });
     const block = managedBlock(dir);

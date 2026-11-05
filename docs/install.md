@@ -13,18 +13,43 @@ credentials are needed for setup.
 ## Windows source candidate
 
 The published `0.1.0-beta.1` package predates native Windows fixes. To try the
-current source on Windows, use Node 22+ and PowerShell. Keep any older checkout
-and its work intact; use a separate checkout or worktree for this candidate.
+current source on Windows, use Node 22+ and PowerShell or `cmd.exe`. Keep any
+older checkout and its work intact; use a separate checkout or worktree for
+this candidate.
 
 From the candidate's root, run `npm ci --ignore-scripts --no-audit --no-fund`,
 then `npm pack --pack-destination <local-artifact-directory>`. In each target
 repository install that exact local tarball as a development dependency and
-run `./node_modules/.bin/sannr connect`, then
-`./node_modules/.bin/sannr doctor --offline`. Installing a tarball records its
-path in the manifest; use a team-accessible artifact path if committing it.
-For an existing locked project, `npm install --no-save --package-lock=false
-<tarball>` tests the candidate locally without changing its manifest; a later
-`npm ci` restores the locked release.
+run:
+
+```powershell
+node .\node_modules\@sannr\sannr\bin\cli.mjs connect
+node .\node_modules\@sannr\sannr\bin\cli.mjs doctor --offline
+```
+
+Installing a tarball records its path in the manifest; use a team-accessible
+artifact path if committing it. For an existing locked project,
+`npm install --no-save --package-lock=false <tarball>` tests the candidate
+locally without changing its manifest; a later `npm ci` restores the locked
+release.
+
+npm puts three launchers in `node_modules\.bin`: `sannr` (a POSIX shell
+script), `sannr.cmd` and `sannr.ps1`. In PowerShell,
+`./node_modules/.bin/sannr` can run `sannr.ps1`, which the default execution
+policy on Windows client editions (`Restricted`) refuses with "running scripts
+is disabled on this system", the same error npm's own `npm.ps1` gives. Two
+forms need no policy change and work in PowerShell and `cmd.exe`:
+`node .\node_modules\@sannr\sannr\bin\cli.mjs <command>` and
+`.\node_modules\.bin\sannr.cmd <command>`. If you already ran
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` for npm, the `.ps1`
+launcher runs too.
+
+Which form an agent needs depends on its shell. Claude Code on Windows runs
+commands through Git Bash, where `./node_modules/.bin/sannr` runs the shell
+script exactly as on macOS and Linux. Codex runs commands in PowerShell. The
+generated pointer block keeps the `./node_modules/.bin/sannr` form, which is
+the same for every teammate, and adds one line giving the PowerShell form;
+`connect` prints the same advice in a Windows terminal.
 
 Native setup uses Windows paths and Node directly for MCP. A package-manager
 MCP launch uses npm's JavaScript entry rather than executing `npx.cmd` as a
@@ -74,7 +99,9 @@ npm install --save-dev @sannr/sannr
 ```
 
 With a local install, every command Sannr writes into your repository (the
-pointer block, the installed skills) uses `./node_modules/.bin/sannr`, the MCP
+pointer block, the installed skills) uses `./node_modules/.bin/sannr`, with one
+pointer line giving the PowerShell form
+`node ./node_modules/@sannr/sannr/bin/cli.mjs` ([why](#windows-source-candidate)), the MCP
 registration starts the local `server.mjs` with no npm download, and the
 installed skills can link to the package's `docs/` with relative paths. Use
 `--omit=optional` to leave out the pinned protocol libraries (GraphQL,

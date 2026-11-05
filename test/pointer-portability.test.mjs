@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { POINTER_BEGIN, POINTER_END, PRODUCT } from "../lib/brand.mjs";
+import { POINTER_BEGIN, POINTER_END, POINTER_POWERSHELL_CLI_NAME, PRODUCT } from "../lib/brand.mjs";
 import { blockText } from "../lib/block-text.mjs";
 import { start } from "./fixture-server.mjs";
 
@@ -166,6 +166,9 @@ test("managed pointer commands are byte-identical across checkout path shapes", 
       assert.match(block, new RegExp(`\\./node_modules/\\.bin/${PRODUCT} map \\.`));
       assert.match(block, new RegExp(`\\./node_modules/\\.bin/${PRODUCT} learn`));
       assert.match(block, new RegExp(`\\./node_modules/\\.bin/${PRODUCT} unwire`));
+      // PowerShell resolves the extensionless shim to its .ps1 sibling; the
+      // committed alternative is the package entry run by node, same bytes on every host.
+      assert.ok(block.includes(`In PowerShell, run \`${POINTER_POWERSHELL_CLI_NAME}\` in place of \`${PORTABLE_CLI}\`.`), block);
       assertNoMachinePath(block);
       return block;
     });
