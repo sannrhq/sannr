@@ -16,6 +16,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   and Linux output is unchanged. Recognition, `unwire` and conflict checks
   accept both forms on every platform. The hook still covers only the Bash
   tool, not Claude Code's PowerShell tool.
+- `workbench` opens the browser on Windows through PowerShell's `Start-Process`,
+  reading the URL from an environment variable; it used to spawn `xdg-open`
+  there and only print the fallback message.
+- The committed pointer block names `node ./node_modules/@sannr/sannr/bin/cli.mjs`
+  as the PowerShell form of the CLI, and `connect` on Windows prints the same
+  hint, because the `.bin` shim's `.ps1` sibling is blocked by the default
+  Windows client execution policy. The install, limitations and quickstart
+  docs explain the launchers and which host shell each applies to.
 
 ## [0.1.0-beta.1] - 2026-11-03
 
