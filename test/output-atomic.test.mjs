@@ -1,3 +1,4 @@
+import { unsafeAliasSync } from './helpers/unsafe-alias.mjs';
 // MAP-1C fix round 1 (B3): evidence run files are written atomically. The
 // bytes go to an exclusively created temporary file in the same directory and
 // are renamed into place, so a reader never sees a run file half written. The
@@ -5,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs, { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync,
-  symlinkSync, writeFileSync } from 'node:fs';
+  writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -66,7 +67,7 @@ test('MAP-1C B3 the atomic writer keeps the link and descriptor protections', t 
   const outside = join(f.root, 'outside.json');
   writeFileSync(outside, 'untouched');
   // A symlink at the destination is refused, never followed or replaced.
-  symlinkSync(outside, join(f.dir, 'run-link.json'));
+  unsafeAliasSync(outside, join(f.dir, 'run-link.json'));
   assert.throws(() => write(join(f.dir, 'run-link.json'), 'x', { mode: 0o600 }), { code: 'OUTPUT_UNSAFE_PATH' });
   assert.equal(readFileSync(outside, 'utf8'), 'untouched');
   // A hard-linked destination is refused.
@@ -76,14 +77,15 @@ test('MAP-1C B3 the atomic writer keeps the link and descriptor protections', t 
   assert.equal(readFileSync(join(f.root, 'second-name.json'), 'utf8'), 'original');
   // A linked ancestor directory is refused.
   mkdirSync(join(f.root, 'real'));
-  symlinkSync(join(f.root, 'real'), join(f.root, 'aliased'));
+  unsafeAliasSync(join(f.root, 'real'), join(f.root, 'aliased'));
   assert.throws(() => write(join(f.root, 'aliased', 'run-a.json'), 'x', { mode: 0o600 }), { code: 'OUTPUT_UNSAFE_PATH' });
   assert.deepEqual(readdirSync(join(f.root, 'real')), []);
   // An existing entry at the temporary name is refused unopened and left as it was.
-  symlinkSync(outside, join(f.dir, 'run-planted.tmp.json'));
+  unsafeAliasSync(outside, join(f.dir, 'run-planted.tmp.json'));
   assert.throws(() => write(join(f.dir, 'run-b.json'), 'x', { mode: 0o600, tempName: 'run-planted.tmp.json' }), { code: 'OUTPUT_UNSAFE_PATH' });
   assert.equal(readFileSync(outside, 'utf8'), 'untouched');
-  assert.equal(fs.lstatSync(join(f.dir, 'run-planted.tmp.json')).isSymbolicLink(), true, 'the planted entry is not removed');
+  const planted = fs.lstatSync(join(f.dir, 'run-planted.tmp.json'));
+  assert.equal(process.platform === 'win32' ? planted.nlink > 1 : planted.isSymbolicLink(), true, 'the planted alias is not removed');
   writeFileSync(join(f.dir, 'run-held.tmp.json'), 'someone else');
   assert.throws(() => write(join(f.dir, 'run-c.json'), 'x', { mode: 0o600, tempName: 'run-held.tmp.json' }), { code: 'OUTPUT_UNSAFE_PATH' });
   assert.equal(readFileSync(join(f.dir, 'run-held.tmp.json'), 'utf8'), 'someone else');

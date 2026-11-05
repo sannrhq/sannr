@@ -2,11 +2,11 @@
 // witness, not Webster's Worker: ingress/D1/WAF/wrangler claims remain separate.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, win32 } from 'node:path';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { HOME_ENV_NAME, PROJECT_DIR_NAME, PRODUCT, CONTEXT_BASENAME } from '../lib/brand.mjs';
 import { LAYOUT } from '../lib/layout.mjs';
 import { operationId, operationIdentity } from '../lib/operation-context.mjs';
@@ -81,7 +81,7 @@ async function fixture(t, { policy, mode = 'accepted' } = {}) {
       return response;
     };
   `);
-  env.NODE_OPTIONS = `--import=${preload}`;
+  env.NODE_OPTIONS = `--import=${pathToFileURL(preload).href}`;
   return { root, home, parent, env, sent, control, close,
     calls: () => existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [],
     wire: async () => (await control('snapshot')).requests,
@@ -190,7 +190,9 @@ test('FEEDBACK-001 unreadable stack history refuses before a partial report or s
     const store = seedFeedbackStack(f, 'broken');
     if (kind === 'symlink') {
       const outside = join(f.parent, 'outside.json'); writeJson(outside, knowledge(true));
-      symlinkSync(outside, store);
+      // File aliases are hardlinks on Windows without Developer Mode; both
+      // must be refused before reading history or sending a partial report.
+      (process.platform === 'win32' ? linkSync : symlinkSync)(outside, store);
     } else writeFileSync(store, kind === 'malformed' ? '{' : '{"operations": []}');
     const result = await f.command(['feedback', '--send']);
     assert.notEqual(result.exit, 0, `${kind}: ${result.text}`);
@@ -228,7 +230,7 @@ test('FEEDBACK-QA(a,b) allow posts once with byte-identical 0600 ignored receipt
   assert.equal(wire[0].url, '/api/v1/feedback');
   const before = wire[0].receipts.find(row => row.bytes === wire[0].body);
   assert.ok(before, 'Exact payload receipt must exist before the request reaches the fake.');
-  assert.equal(before.mode, 0o600);
+  assert.equal(before.mode, process.platform === 'win32' ? 0o666 : 0o600);
   assert.match(before.name, /^[0-9A-HJKMNP-TV-Z]{26}\.json$/);
   assert.equal(readFileSync(join(f.sent, before.name), 'utf8'), wire[0].body);
   const ignored = await run('git', ['check-ignore', '--quiet', join(f.sent, before.name)], { cwd: f.root, env: f.env });
@@ -273,7 +275,7 @@ test('FEEDBACK-QA(e) response injection, malformed success and redirect bodies n
 test('FEEDBACK-QA(b) a linked receipt parent refuses before any wire bytes or outside write', async t => {
   const f = await fixture(t, { policy: 'allow' }), outside = join(f.parent, 'outside');
   mkdirSync(outside); mkdirSync(join(f.root, PROJECT_DIR_NAME, 'feedback'), { recursive: true });
-  symlinkSync(outside, f.sent);
+  symlinkSync(outside, f.sent, process.platform === 'win32' ? 'junction' : 'dir');
   const result = await f.command(['feedback', '--send']);
   assert.notEqual(result.exit, 0, result.text);
   assert.match(result.text, /(?:FEEDBACK|LAYOUT|OUTPUT)_.*(?:UNSAFE|PATH|SYMLINK)/);

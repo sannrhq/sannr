@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { CONTEXT_BASENAME, HOME_ENV_NAME } from '../lib/brand.mjs';
+import { CONTEXT_BASENAME, HOME_ENV_NAME, PRODUCT } from '../lib/brand.mjs';
 import { LAYOUT } from '../lib/layout.mjs';
 import { createWorkbenchControl, requestWorkbenchShow, listWorkbenchControls, controlDirectory } from '../lib/workbench-control.mjs';
 import { createShowQueue, workbenchHandlers } from '../lib/workbench-engine.mjs';
@@ -50,7 +50,7 @@ test('a running Workbench answers a show request for a recorded session, refuses
   const record = JSON.parse(readFileSync(control.record, 'utf8'));
   assert.deepEqual(Object.keys(record).sort(), ['heartbeat_at', 'pid', 'session_id', 'socket', 'started_at', 'version']);
   assert.equal(record.session_id, wb);
-  assert.equal(statSync(control.record).mode & 0o777, 0o600);
+  assert.equal(statSync(control.record).mode & 0o777, process.platform === 'win32' ? 0o666 : 0o600);
   assert.equal(readFileSync(join(controlDirectory(root), '.gitignore'), 'utf8'), '*\n');
   assert.deepEqual(listWorkbenchControls(root).map(item => item.session_id), [wb]);
   assert.deepEqual(listWorkbenchControls(root, { now: Date.now() + 60_000 }), [], 'a record past its heartbeat TTL is not a running Workbench');
@@ -86,11 +86,24 @@ test('a fresh record whose socket is gone is unreachable, not a running Workbenc
   const { root } = project(t);
   const dir = controlDirectory(root); mkdirSync(dir, { recursive: true });
   const wb = `wb-${randomUUID()}`, now = new Date().toISOString();
-  writeFileSync(join(dir, `${wb}.json`), JSON.stringify({ version: 1, session_id: wb, pid: 1, socket: join(tmpdir(), `missing-${randomUUID()}.sock`), started_at: now, heartbeat_at: now }));
+  const socket = process.platform === 'win32'
+    ? `\\\\.\\pipe\\${PRODUCT}-wb-${randomUUID().replaceAll('-', '').slice(0, 16)}`
+    : join(tmpdir(), `missing-${randomUUID()}.sock`);
+  writeFileSync(join(dir, `${wb}.json`), JSON.stringify({ version: 1, session_id: wb, pid: 1, socket, started_at: now, heartbeat_at: now }));
   writeFileSync(join(dir, 'wb-malformed.json'), '{"version":1}');
   const result = await requestWorkbenchShow(root, `process:${randomUUID()}`);
   assert.equal(result.state, 'unreachable');
   assert.equal(result.attempts.length, 1);
+});
+
+test('Windows discovery refuses remote and foreign pipe records before connecting', { skip: process.platform !== 'win32' }, t => {
+  const { root } = project(t), dir = controlDirectory(root);
+  mkdirSync(dir, { recursive: true });
+  const session = `wb-${randomUUID()}`, now = new Date().toISOString();
+  for (const socket of ['\\\\remote.invalid\\pipe\\untrusted', '\\\\.\\pipe\\foreign', '\\\\.\\pipe\\' + PRODUCT + '-wb-not-a-nonce']) {
+    writeFileSync(join(dir, `${session}.json`), JSON.stringify({ version: 1, session_id: session, pid: 1, socket, started_at: now, heartbeat_at: now }));
+    assert.deepEqual(listWorkbenchControls(root), []);
+  }
 });
 
 test('api_workbench show never fails the turn: it returns the CLI command without a Workbench, and the shown state with a paired one', async t => {

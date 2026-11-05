@@ -22,7 +22,7 @@ import { LAYOUT } from "../lib/layout.mjs";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync,  readFileSync, existsSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, cpSync, readFileSync, existsSync, rmSync, realpathSync } from "node:fs";
 import { writeFileSync } from "./helpers/layout-fixture.mjs";
 import { tmpdir } from "node:os";
 import { join, dirname, relative, resolve, basename } from "node:path";
@@ -30,6 +30,8 @@ import { fileURLToPath } from "node:url";
 
 import { PRODUCT, MCP_SERVER_KEY } from "../lib/brand.mjs";
 import { stagePackage } from "../scripts/stage-package.mjs";
+import { runNpm } from '../scripts/npm-command.mjs';
+import { discoverMcpRegistrations } from '../lib/mcp-registrations.mjs';
 import { isRuntimeDependencyPath, verifyRuntimeDependency } from '../lib/runtime-dependencies.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -45,7 +47,7 @@ before(() => {
   SCRATCH = realpathSync(mkdtempSync(join(tmpdir(), "packed-")));
   // Lifecycle generation belongs to this isolated copy, never the shared engine.
   const staged = stagePackage(ROOT, join(SCRATCH, "source"));
-  execFileSync("npm", ["pack", "--pack-destination", SCRATCH],
+  runNpm(["pack", "--pack-destination", SCRATCH],
     { cwd: staged, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   const tgz = join(SCRATCH, `${PKG.name.replace(/^@/, "").replace("/", "-")}-${PKG.version}.tgz`);
   assert.ok(existsSync(tgz), `npm pack produced no ${basename(tgz)}`);
@@ -254,8 +256,9 @@ test("connect from the installed copy wires an agent AND installs the skills", a
   // extracted package, not at a globally installed or source-tree copy.
   const codex = readFileSync(join(dir, ".codex", "config.toml"), "utf8");
   assert.match(codex, /\[mcp_servers\.sannr\]/);
-  assert.match(codex, new RegExp(PACKED.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.doesNotMatch(codex, new RegExp(ROOT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  const codexEntry = discoverMcpRegistrations(dir).find(row => row.host === 'codex' && row.key === MCP_SERVER_KEY);
+  assert.deepEqual(codexEntry.args, entry.args);
+  assert.equal(codexEntry.command, entry.command);
 });
 
 test("the MCP server launches from the extracted copy and offers its tool", async () => {
@@ -290,7 +293,7 @@ test("a package missing its skills says so, and never prints a stack trace", () 
   // incomplete" — and those have very different next steps.
   const broken = join(SCRATCH, "broken");
   mkdirSync(broken, { recursive: true });
-  execFileSync("cp", ["-R", `${PACKED}/.`, broken]);
+  cpSync(PACKED, broken, { recursive: true });
   rmSync(join(broken, "skill"), { recursive: true, force: true });
 
   const { dir, home } = scratchRepo({

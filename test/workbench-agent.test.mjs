@@ -1,6 +1,7 @@
+import { unsafeAliasSync } from './helpers/unsafe-alias.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile, lstat, readdir, mkdir, chmod, symlink, utimes } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, lstat, readdir, mkdir, chmod, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -30,8 +31,8 @@ test('optional agent presence attaches without a host probe or browser authority
   assert.equal(record.task, 'Debug GET /orders/{id}');
   assert.equal(record.session_id, agent.sessionId);
   assert.equal(agent.info().state, 'attached');
-  assert.equal((await lstat(join(f.directory, `${agent.sessionId}.json`))).mode & 0o777, 0o600);
-  assert.equal((await lstat(f.directory)).mode & 0o777, 0o700);
+  assert.equal((await lstat(join(f.directory, `${agent.sessionId}.json`))).mode & 0o777, process.platform === 'win32' ? 0o666 : 0o600);
+  assert.equal((await lstat(f.directory)).mode & 0o777, process.platform === 'win32' ? 0o666 : 0o700);
   assert.equal(await readFile(join(f.directory, '.gitignore'), 'utf8'), '*\n');
   assert.deepEqual(Object.keys(record).sort(), ['version', 'session_id', 'host', 'task', 'attached_at', 'heartbeat_at'].sort());
   for (const key of ['url', 'token', 'port', 'authorizePairing']) assert.equal(agent[key], undefined);
@@ -84,7 +85,8 @@ test('group-writable repository ancestors are supported while the private presen
   for (const segment of [PROJECT_DIR_NAME, 'evidence', 'workbench']) { path = join(path, segment); await mkdir(path); await chmod(path, 0o775); }
   const agent = await f.launch();
   assert.equal((await presence.listWorkbenchAgents(f.root)).agents[0].session_id, agent.sessionId);
-  assert.equal((await lstat(join(f.root, PROJECT_DIR_NAME))).mode & 0o777, 0o775);
+  assert.equal((await lstat(join(f.root, PROJECT_DIR_NAME))).mode & 0o777, process.platform === 'win32' ? 0o666 : 0o775);
+  if (process.platform === 'win32') return; // POSIX group bits have no ACL meaning on Windows.
   await chmod(f.directory, 0o775);
   await assert.rejects(f.launch(), { code: 'WORKBENCH_PRESENCE_UNSAFE' });
   const unavailable = await presence.listWorkbenchAgents(f.root);
@@ -97,7 +99,7 @@ test('unsafe, malformed and legacy bridge records never appear as present and ar
   const f = await fixture(t), other = await fixture(t), agent = await f.launch();
   const path = join(f.directory, `${agent.sessionId}.json`), record = await currentRecord(f, agent);
   await chmod(path, 0o644);
-  assert.deepEqual((await presence.listWorkbenchAgents(f.root)).agents, []);
+  if (process.platform !== 'win32') assert.deepEqual((await presence.listWorkbenchAgents(f.root)).agents, []);
   await chmod(path, 0o600);
   for (const invalid of [{ ...record, heartbeat_at: 'bad-date' }, { ...record, session_id: `wb-${randomUUID()}` }, { ...record, token: 'bridge-token', port: 12345 }]) {
     await writeFile(path, JSON.stringify(invalid));
@@ -105,7 +107,7 @@ test('unsafe, malformed and legacy bridge records never appear as present and ar
   }
   await rm(path);
   const outside = join(other.root, 'private.json'); await writeFile(outside, JSON.stringify(record), { mode: 0o600 });
-  await symlink(outside, path);
+  unsafeAliasSync(outside, path);
   assert.deepEqual((await presence.listWorkbenchAgents(f.root)).agents, []);
   await assert.rejects(agent.refresh(), { code: 'WORKBENCH_PRESENCE_UNSAFE' });
   assert.equal(await readFile(outside, 'utf8'), JSON.stringify(record));
@@ -157,10 +159,10 @@ test('presence cleanup leaves recently written, future, malformed, legacy and sy
   }
   const link = join(f.directory, `wb-${randomUUID()}.json`), outside = join(other.root, 'outside.json');
   await writeFile(outside, JSON.stringify(base), { mode: 0o600 });
-  await symlink(outside, link);
+  unsafeAliasSync(outside, link);
   const before = await Promise.all(files.map(file => readFile(file, 'utf8')));
   await f.launch({ task: 'Another task' });
   assert.deepEqual(await Promise.all(files.map(file => readFile(file, 'utf8'))), before);
-  assert.equal((await lstat(link)).isSymbolicLink(), true);
+  assert.equal(process.platform === 'win32' ? (await lstat(link)).nlink > 1 : (await lstat(link)).isSymbolicLink(), true);
   assert.equal(await readFile(outside, 'utf8'), JSON.stringify(base));
 });

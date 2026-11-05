@@ -6,8 +6,38 @@ upgrade or remove an installation. For the first run, start with the
 [quickstart](quickstart.md).
 
 You need macOS or Linux, Node 22 or newer with npm, and Claude Code, Codex or
-Cursor. Native Windows is not supported. No account, API contract or
+Cursor. Native Windows has an experimental source candidate described below.
+No account, API contract or
 credentials are needed for setup.
+
+## Windows source candidate
+
+The published `0.1.0-beta.1` package predates native Windows fixes. To try the
+current source on Windows, use Node 22+ and PowerShell. Keep any older checkout
+and its work intact; use a separate checkout or worktree for this candidate.
+
+From the candidate's root, run `npm ci --ignore-scripts --no-audit --no-fund`,
+then `npm pack --pack-destination <local-artifact-directory>`. In each target
+repository install that exact local tarball as a development dependency and
+run `./node_modules/.bin/sannr connect`, then
+`./node_modules/.bin/sannr doctor --offline`. Installing a tarball records its
+path in the manifest; use a team-accessible artifact path if committing it.
+For an existing locked project, `npm install --no-save --package-lock=false
+<tarball>` tests the candidate locally without changing its manifest; a later
+`npm ci` restores the locked release.
+
+Native setup uses Windows paths and Node directly for MCP. A package-manager
+MCP launch uses npm's JavaScript entry rather than executing `npx.cmd` as a
+native program. The Workbench uses a local Windows named pipe for discovery
+and control. No WSL or Administrator/Developer Mode is required for core use.
+Windows file privacy relies on the containing directories' NTFS ACLs; Node's
+POSIX permission bits do not describe those ACLs. Keep private evidence and
+local credentials in directories private to your Windows account.
+
+This candidate is verified separately from the published release. Its Windows
+CI lanes cover core safety and native CLI/MCP/Workbench scenarios; they are
+not a full release or native browser qualification. Restart the coding host
+after setup and compare the new repository binding before claiming activation.
 
 ## Install from npm
 

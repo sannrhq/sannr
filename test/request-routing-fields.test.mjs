@@ -15,20 +15,27 @@ const clientUrl = new URL("../lib/client.mjs", import.meta.url).href;
 const serverPath = fileURLToPath(new URL("../server.mjs", import.meta.url));
 async function fixture(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "request-routing-")));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const children = [];
   const calls = [];
   const server = createServer((request, response) => {
     calls.push(request.url); response.setHeader("content-type", "application/json"); response.end('{"ok":true}');
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  t.after(async () => {
+    for (const child of children) if (child.exitCode === null && child.signalCode === null) {
+      await new Promise(resolve => { child.once("close", resolve); child.kill(); });
+    }
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    rmSync(root, { recursive: true, force: true });
+  });
   const origin = `http://127.0.0.1:${server.address().port}`;
   writeFileSync(join(root, LAYOUT.environments), JSON.stringify({ v: 1, default: "local",
     environments: { local: { baseUrl: origin } }, hosts: { peer: { baseUrl: `${origin}/peer` } } }));
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(API_|SANNR_)/.test(key))),
     API_CONFIG: join(root, LAYOUT.environments), API_CONTEXT_DIR: root, API_EVIDENCE: join(root, "evidence"),
     SANNR_HOME: join(root, "home"), API_USAGE_LOG: "", API_FRICTION_OFF: "1" };
-  return { root, env, origin, calls };
+  return { root, env, origin, calls, children };
 }
 
 test("ambiguous target keys refuse HTTP, curl and protocols before execution; envelope validation is atomic", async t => {
@@ -65,7 +72,7 @@ test("ambiguous target keys refuse HTTP, curl and protocols before execution; en
 test("MCP preserves routing refusals and a corrected upstream request reaches only that provider", async t => {
   const f = await fixture(t);
   const child = spawn(process.execPath, [serverPath], { cwd: f.root, env: f.env, stdio: ["pipe", "pipe", "pipe"] });
-  t.after(() => child.kill());
+  f.children.push(child);
   const pending = new Map(); let buffer = "";
   child.stdout.on("data", chunk => {
     buffer += chunk;

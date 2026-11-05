@@ -6,9 +6,11 @@ see [SUPPORT.md](../SUPPORT.md).
 
 ## Platforms and hosts
 
-- macOS and Linux with Node 22 or newer. Native Windows is not supported; the
-  path handling has known open issues. Windows Subsystem for Linux has not been
-  part of our testing.
+- macOS and Linux with Node 22 or newer. Native Windows is experimental in
+  the source tree; the published beta.1 package predates the native fixes. See
+  [Windows source candidate](install.md#windows-source-candidate) for installation,
+  test scope and NTFS permission limits. WSL is not required by this candidate
+  and has not been part of its testing.
 - Claude Code, Codex and Cursor are the hosts `connect` registers. Cursor is
   detected only when a `.cursor/` directory already exists. Other MCP hosts can
   point at `sannr mcp serve` by hand, but setup does not write their files.

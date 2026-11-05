@@ -150,7 +150,11 @@ test("managed pointer commands are byte-identical across checkout path shapes", 
   try {
     const shapes = [
       { tool: "POSIX checkout with spaces/tool", repo: "POSIX project with spaces" },
-      { tool: ("C:" + "/" + "Users/Alice/Sannr checkout"), repo: ("D:" + "/Work/same-project") },
+      // POSIX can emulate a drive spelling as a literal directory name.
+      // On Windows the temporary root already supplies the real drive; a
+      // second colon inside it is an invalid filename, not another checkout.
+      { tool: process.platform === 'win32' ? 'Windows checkout with spaces/tool' : ("C:" + "/" + "Users/Alice/Sannr checkout"),
+        repo: process.platform === 'win32' ? 'Windows project with spaces' : ("D:" + "/Work/same-project") },
     ];
     const blocks = shapes.map(({ tool, repo }) => {
       const cli = copyBareTool(join(base, tool));
