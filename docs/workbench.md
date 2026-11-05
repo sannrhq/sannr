@@ -17,8 +17,11 @@ and with a repository-local install `./node_modules/.bin/sannr`:
 npx @sannr/sannr workbench
 ```
 
-The command opens the default browser. Use `--no-open` to open the printed
-local URL yourself. Without an interactive terminal (a pipe, an agent's shell)
+The command opens the default browser: with `open` on macOS, `xdg-open` on
+Linux, and on Windows with PowerShell's `Start-Process`, which receives the URL
+through an environment variable rather than as command text. If the opener
+cannot start, the terminal asks you to open the printed URL. Use `--no-open` to
+open the printed local URL yourself. Without an interactive terminal (a pipe, an agent's shell)
 it refuses with `WORKBENCH_TERMINAL_REQUIRED`. The listener is IPv4 loopback only, on an
 ephemeral port. The URL contains no authority and may be printed normally.
 Each launch creates an operator session ID for its handoff journal. To continue
