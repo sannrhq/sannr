@@ -33,7 +33,7 @@ test('packaged knowledge stays readable when its native scope is on another driv
   });
 });
 
-test('setup bindings survive another filesystem spelling of the same checkout', t => {
+test('setup bindings survive another filesystem spelling of the same checkout', async t => {
   const base = mkdtempSync(join(tmpdir(), 'native-root-alias-'));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const root = join(base, 'real'), alias = join(base, 'alias');
@@ -41,6 +41,13 @@ test('setup bindings survive another filesystem spelling of the same checkout', 
   symlinkSync(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
   const entry = { command: process.execPath, args: [fileURLToPath(new URL('../server.mjs', import.meta.url))], env: { API_CONTEXT_DIR: root } };
   assert.equal(setupBindingId(root, entry), setupBindingId(alias, entry));
+  if (process.platform === 'win32') {
+    const { stdout } = await exec('cmd.exe', ['/d', '/c', 'for %I in ("%NATIVE_TEST_ROOT%") do @echo "%~sI"'],
+      { env: { ...process.env, NATIVE_TEST_ROOT: root } });
+    const shortRoot = stdout.trim().slice(1, -1);
+    assert.ok(shortRoot);
+    assert.equal(setupBindingId(root, entry), setupBindingId(shortRoot, entry));
+  }
 });
 
 test('CRLF skill sources render the same complete commands and documentation as LF sources', t => {
