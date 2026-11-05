@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,11 +10,38 @@ import { createServer } from 'node:http';
 import { SKILL_SOURCES, renderSkill } from '../lib/connect.mjs';
 import { atomicRenameSync } from '../lib/atomic-rename.mjs';
 import { createFixtureStack } from './helpers/stack-fixture.mjs';
-import { MCP_SERVER_KEY } from '../lib/brand.mjs';
+import { MCP_SERVER_KEY, FEEDBACK_STACK_NAME } from '../lib/brand.mjs';
 import { advertisementPlan } from '../lib/advertisement.mjs';
+import { resolveStack } from '../lib/stacks.mjs';
+import { withStackScope } from '../lib/stack-scope.mjs';
+import { loadContext, saveContext } from '../lib/context.mjs';
+import { setupBindingId } from '../lib/setup-binding.mjs';
 
 const CLI = fileURLToPath(new URL('../bin/cli.mjs', import.meta.url));
 const exec = promisify(execFile);
+
+test('packaged knowledge stays readable when its native scope is on another drive', t => {
+  const temporary = mkdtempSync(join(tmpdir(), 'native-builtin-'));
+  t.after(() => rmSync(temporary, { recursive: true, force: true }));
+  const sourceDrive = CLI[0].toUpperCase();
+  const root = process.platform === 'win32' ? `${sourceDrive === 'Z' ? 'Y' : 'Z'}:/native-readonly-scope` : temporary;
+  const scope = resolveStack(root, { stack: FEEDBACK_STACK_NAME });
+  withStackScope(scope, () => {
+    const context = loadContext(root);
+    assert.ok(context?.operations['POST /feedback'].notes.length >= 4);
+    assert.throws(() => saveContext(root, { operations: {} }), { code: 'STACK_READ_ONLY' });
+  });
+});
+
+test('setup bindings survive another filesystem spelling of the same checkout', t => {
+  const base = mkdtempSync(join(tmpdir(), 'native-root-alias-'));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const root = join(base, 'real'), alias = join(base, 'alias');
+  mkdirSync(root);
+  symlinkSync(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const entry = { command: process.execPath, args: [fileURLToPath(new URL('../server.mjs', import.meta.url))], env: { API_CONTEXT_DIR: root } };
+  assert.equal(setupBindingId(root, entry), setupBindingId(alias, entry));
+});
 
 test('CRLF skill sources render the same complete commands and documentation as LF sources', t => {
   const root = mkdtempSync(join(tmpdir(), 'native skill paths '));

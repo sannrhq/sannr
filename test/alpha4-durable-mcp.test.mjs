@@ -219,7 +219,8 @@ test('actual pinned MCP initializes after cache prune and tag movement despite a
   assert.equal(pinnedMcpPackage(entry), `${NPM_PACKAGE}@${VERSION}`);
   assert.doesNotMatch(JSON.stringify(entry), /_npx|Cellar/);
   const original = entry.env.API_SETUP_BINDING;
-  assert.equal(currentSetupBinding(repo, discoverMcpRegistrations(repo)), original);
+  assert.equal(currentSetupBinding(repo, discoverMcpRegistrations(repo)), original,
+    JSON.stringify({ entry, registrations: discoverMcpRegistrations(repo), recomputed: setupBindingId(repo, entry) }));
   // A repo-local older package/bin must not supersede the pinned MCP package.
   const foreign = join(repo, 'node_modules', ...NPM_PACKAGE.split('/'));
   write(join(foreign, 'package.json'), JSON.stringify({ ...meta, version: '0.0.1' }));

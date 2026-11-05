@@ -65,7 +65,9 @@ export function unitTestPlan(root = ROOT, { safety = false, research = false } =
 
 function executePhase(phase, { root, write }) {
   return new Promise(resolveResult => {
-    const child = spawn(process.execPath, ['--test', '--test-timeout=60000', '--test-reporter=tap', ...phase.files],
+    // Node 22 also applies this to the file wrapper. A serial feedback fixture
+    // can exceed one minute on hosted Windows; retain a finite per-file cap.
+    const child = spawn(process.execPath, ['--test', '--test-timeout=180000', '--test-reporter=tap', ...phase.files],
       { cwd: root, stdio: ['inherit', 'pipe', 'inherit'] });
     const counts = {};
     let pending = '';
