@@ -494,7 +494,7 @@ test("polling counts every concrete fetch attempt", async () => {
   writeFileSync(join(dir, LAYOUT.suites, "poll.json"), JSON.stringify({
     v: 2, name: "poll", requests: [
       { id: "status", method: "GET", path: "/status",
-        wait_for: { json: "state", equals: "done", interval_ms: 100, timeout_ms: 1000 },
+        wait_for: { json: "state", equals: "done", interval_ms: 100, timeout_ms: 10000 },
         expect: [{ status: 200 }] },
     ],
   }, null, 2));

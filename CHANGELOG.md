@@ -10,6 +10,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
 
 ## [Unreleased]
 
+## [0.1.0-beta.2] - 2026-11-05
+
+- Native Windows is supported from this version: Windows paths and `node.exe`
+  are used directly for MCP registration, a package-manager MCP launch runs
+  npm's JavaScript entry under Node instead of executing `npx.cmd`, packaged
+  skill templates render the same from CRLF checkouts, atomic file replacement
+  retries Windows sharing violations instead of overwriting in place, and the
+  Workbench uses a local named pipe for discovery and control. Windows CI lanes
+  run the core safety set and the native CLI, MCP and Workbench scenarios on
+  Node 22 and 24; the full product suite on Windows is an opt-in CI dispatch.
+  Windows file privacy relies on NTFS ACLs, which Node's POSIX mode bits do not
+  describe.
 - `connect --claude-hook` writes the Claude Code hook in exec form on Windows
   (`command` is Node, `args` the generated words) so it runs without a shell;
   the shell-form string PowerShell could not run is rewritten in place. macOS

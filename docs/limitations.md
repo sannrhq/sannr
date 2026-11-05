@@ -6,11 +6,11 @@ see [SUPPORT.md](../SUPPORT.md).
 
 ## Platforms and hosts
 
-- macOS and Linux with Node 22 or newer. Native Windows is experimental in
-  the source tree; the published beta.1 package predates the native fixes. See
-  [Windows source candidate](install.md#windows-source-candidate) for installation,
-  test scope and NTFS permission limits. WSL is not required by this candidate
-  and has not been part of its testing. In PowerShell (the shell Codex uses),
+- macOS, Linux and native Windows with Node 22 or newer. See
+  [Windows](install.md#windows) for installation, what CI verifies there and
+  NTFS permission limits: Windows file privacy relies on directory ACLs, which
+  Node's POSIX mode bits do not describe. WSL is not required and has not been
+  part of the testing. In PowerShell (the shell Codex uses),
   `./node_modules/.bin/sannr` can hit the `.ps1` launcher, which the default
   Windows client execution policy blocks; run
   `node .\node_modules\@sannr\sannr\bin\cli.mjs` or
