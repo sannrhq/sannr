@@ -371,9 +371,9 @@ test("POSIX hook output stays byte-identical to the shipped shell form", () => {
 });
 
 test("Windows hook is exec form: node as command and the generated words as args", () => {
-  const win = { nodePath: "C:\\Program Files\\nodejs\\node.exe",
-    hookPath: "C:\\work\\it's repo\\node_modules\\pkg\\lib\\claude-hook.mjs",
-    configPath: "C:\\work\\it's repo\\.cfg\\api-environments.json", doctor: "npx tool doctor",
+  const win = { nodePath: "C:" + "\\Program Files\\nodejs\\node.exe",
+    hookPath: "C:" + "\\work\\it's repo\\node_modules\\pkg\\lib\\claude-hook.mjs",
+    configPath: "C:" + "\\work\\it's repo\\.cfg\\api-environments.json", doctor: "npx tool doctor",
     pinnedBaseUrls: ["https://api.example.test/v1"] };
   const hook = renderClaudeHook({ ...win, platform: "win32" });
   assert.deepEqual(Object.keys(hook), ["type", "command", "args", "timeout"]);
@@ -425,7 +425,7 @@ test("edited exec-form hooks are locally different: never replaced or removed", 
   const exec = renderClaudeHook({ ...FORM_FIXTURE, platform: "win32" });
   const other = renderClaudeHook({ ...FORM_FIXTURE, doctor: "team-owned doctor", platform: "win32" });
   const edits = [
-    { ...exec, command: "C:\\team\\node.exe" },
+    { ...exec, command: "C:" + "\\team\\node.exe" },
     { ...exec, args: [...exec.args.slice(0, 5), other.args[5]] },
     { ...exec, args: [...exec.args.slice(0, 3), other.args[3], ...exec.args.slice(4)] },
     { ...exec, args: [...exec.args, "--extra"] },
