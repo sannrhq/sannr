@@ -1,8 +1,11 @@
 # Quickstart: five minutes to a first recorded request
 
 You need macOS or Linux, Node 22 or newer with npm, a git repository, and
-Claude Code, Codex or Cursor. Native Windows is not supported. No account, API
-contract or credentials are needed for any step on this page.
+Claude Code, Codex or Cursor. Native Windows is experimental in the source tree
+and this page does not cover it; see the
+[Windows source candidate](install.md#windows-source-candidate), including the
+command form to use in PowerShell. No account, API contract or credentials are
+needed for any step on this page.
 
 Every command below runs from the repository root. `npx @sannr/sannr <command>`
 downloads the package on first use and asks npm's "Ok to proceed?" question in

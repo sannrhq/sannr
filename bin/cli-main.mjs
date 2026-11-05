@@ -58,7 +58,7 @@ import { buildMapModel, footprintModel, renderMapText, renderMapHtml } from "../
 import { renderMapReceipt } from "../lib/map-terminal.mjs";
 import { terminalText } from "../lib/terminal.mjs";
 import { reconciliationModel, renderReconciliationText, renderReconciliationGfm } from "../lib/reconcile.mjs";
-import { advertisementPlan, commandOmission, pinnedMcpPackage } from "../lib/advertisement.mjs";
+import { advertisementPlan, commandOmission, pinnedMcpPackage, powershellCommandHint } from "../lib/advertisement.mjs";
 import { inspectMcp, storeMcpInspection } from "../lib/mcp-inspect.mjs";
 import { parseMcpInspectOptions, safeMcpSummaryPath, writeMcpSummary } from "../lib/mcp-options.mjs";
 import { discoverMcpRegistrations } from "../lib/mcp-registrations.mjs";
@@ -1002,7 +1002,7 @@ async function cmdConnect(argv, { silent = false, selectedContract, createdStack
   const { materializeCiArtifacts, CI_INSTALL_DEFAULT } = await import("../lib/ci-workflow.mjs");
   const { CLAUDE_HOOK_SETTINGS, claudeHookFileProblem,
     claudeHookTarget, configuredBaseUrls,
-    planClaudeHook, policyBaseUrl, renderClaudeHookCommand } =
+    planClaudeHook, policyBaseUrl, renderClaudeHook } =
     await import("../lib/claude-hook.mjs");
 
   const { planClaudeHookIgnore, applyClaudeHookIgnore, claudeHookIgnoreReport } =
@@ -1089,7 +1089,8 @@ async function cmdConnect(argv, { silent = false, selectedContract, createdStack
   const configuredHookUrls = cfg.file && existsSync(cfg.file)
     ? configuredBaseUrls(readFileSync(cfg.file, "utf8"), pinnedBaseUrls)
     : configuredBaseUrls("{}", pinnedBaseUrls);
-  const hookCommand = renderClaudeHookCommand({ configPath: cfg.file ?? "",
+  // Shell form on POSIX; exec form (node + args, no shell) on Windows.
+  const hookCommand = renderClaudeHook({ configPath: cfg.file ?? "",
     doctor: `${localCli} doctor`, pinnedBaseUrls });
   let hookPlan = null;
   let hookIgnorePlan = null;
@@ -1458,6 +1459,8 @@ async function cmdConnect(argv, { silent = false, selectedContract, createdStack
             : `A teammate who clones the repo installs the team's selected CLI version and runs its connect command in their checkout.`),
     verify: `${localCli} start --dry-run --json`,
   };
+  const powershell = powershellCommandHint(commandResolution);
+  if (powershell) report.powershell = powershell;
 
   const setupEvidence = stackEvidenceClasses(root, ctx ?? {}, { config: cfg,
     contract: contractPlan.contract ? loadHttpContract(contractPlan.contract, { pathPrefix: cfg.contractPathPrefix }) : null });
@@ -1542,7 +1545,7 @@ async function cmdConnect(argv, { silent = false, selectedContract, createdStack
     out.push("", dryRun || conflicts ? "  Planned files (nothing written):" : "  Files touched:");
     for (const row of dryRun || conflicts ? report.planned_files : report.touched_files)
       out.push(`  ${row.action.padEnd(9)} ${terminalText(row.path)}`);
-    out.push("", `  ${report.note}`, "", renderSetupReceipt(report.setup));
+    out.push("", `  ${report.note}`, ...(report.powershell ? [`  ${report.powershell}`] : []), "", renderSetupReceipt(report.setup));
     if (conflicts) out.push(report.next);
     console.log(out.join("\n"));
   }

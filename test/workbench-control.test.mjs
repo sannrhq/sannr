@@ -14,7 +14,7 @@ import { LAYOUT } from '../lib/layout.mjs';
 import { createWorkbenchControl, requestWorkbenchShow, listWorkbenchControls, controlDirectory } from '../lib/workbench-control.mjs';
 import { createShowQueue, workbenchHandlers } from '../lib/workbench-engine.mjs';
 import { createWorkbenchAgentTools } from '../lib/workbench-agent-tools.mjs';
-import { launchWorkbench, parseWorkbenchArgs, resolveShowTarget, workbenchShowUrl } from '../lib/workbench-cli.mjs';
+import { browserLaunch, launchWorkbench, parseWorkbenchArgs, resolveShowTarget, workbenchShowUrl } from '../lib/workbench-cli.mjs';
 
 const SID = 'AC' + 'a'.repeat(32);
 function project(t) {
@@ -138,6 +138,17 @@ test('api_workbench show never fails the turn: it returns the CLI command withou
   const other = await peer.call({ action: 'show', session: `process:${randomUUID()}` });
   assert.equal(other.shown, false); assert.equal(other.workbench.state, 'refused'); assert.equal(other.workbench.code, 'WORKBENCH_SESSION_UNKNOWN');
   assert.equal(shows.list().length, 2);
+});
+
+test('the browser launcher passes the URL as one argument, and on Windows never as PowerShell text', () => {
+  const url = "http://127.0.0.1:1/?a=1&b='$(x)';c#session/process%3Ax";
+  assert.deepEqual(browserLaunch(url, 'darwin'), { command: 'open', args: [url] });
+  assert.deepEqual(browserLaunch(url, 'linux'), { command: 'xdg-open', args: [url] });
+  const windows = browserLaunch(url, 'win32', { SystemRoot: 'D:\\Win' });
+  assert.equal(windows.command, 'D:\\Win\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  assert.deepEqual(windows.args, ['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath $env:WORKBENCH_OPEN_URL']);
+  assert.deepEqual(windows.env, { WORKBENCH_OPEN_URL: url });
+  assert.equal(browserLaunch(url, 'win32', {}).command, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
 });
 
 test('launching writes the discovery record beside the inbox, removes it on close, and --show resolves last-session or a ledger id', async t => {

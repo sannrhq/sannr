@@ -10,7 +10,14 @@ see [SUPPORT.md](../SUPPORT.md).
   the source tree; the published beta.1 package predates the native fixes. See
   [Windows source candidate](install.md#windows-source-candidate) for installation,
   test scope and NTFS permission limits. WSL is not required by this candidate
-  and has not been part of its testing.
+  and has not been part of its testing. In PowerShell (the shell Codex uses),
+  `./node_modules/.bin/sannr` can hit the `.ps1` launcher, which the default
+  Windows client execution policy blocks; run
+  `node .\node_modules\@sannr\sannr\bin\cli.mjs` or
+  `.\node_modules\.bin\sannr.cmd` instead. Git Bash, which Claude Code uses,
+  runs the `./node_modules/.bin/sannr` form as written. The optional
+  `--claude-hook` checks only Claude Code's Bash tool, so on Windows it does
+  not cover commands run through Claude Code's PowerShell tool.
 - Claude Code, Codex and Cursor are the hosts `connect` registers. Cursor is
   detected only when a `.cursor/` directory already exists. Other MCP hosts can
   point at `sannr mcp serve` by hand, but setup does not write their files.
