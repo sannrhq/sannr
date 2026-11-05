@@ -50,9 +50,15 @@ see [SUPPORT.md](../SUPPORT.md).
   documented bounds in [protocols](protocols.md). The adapters are optional,
   pinned packages; a missing one is named with its install command.
 - Not supported: generic server-sent events, incremental or multipart GraphQL
-  HTTP results, GraphQL subscriptions over legacy subprotocols, JSON-RPC wire
+  HTTP results, GraphQL over GET, persisted queries, GraphQL multipart file
+  uploads, GraphQL subscriptions over legacy subprotocols, JSON-RPC wire
   batches and notifications, an OpenRPC loader, gRPC reflection, and mutual
   TLS. Apollo GraphQL and Federation are planned.
+- GraphQL schema files are supplied by you (SDL or introspection JSON in the
+  project); Sannr does not fetch or write one, and does not validate returned
+  fields against it. Protocol observations are kept under `api_context` and
+  read with `context query --stack`; `show` and the Workbench list the notes
+  on a GraphQL operation, not those observations.
 - Protocol adapters do not retry or follow redirects. HTTP redirects follow the
   client's credential, body and method guards, and some are refused.
 
