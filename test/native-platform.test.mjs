@@ -43,7 +43,7 @@ test('setup bindings survive another filesystem spelling of the same checkout', 
   assert.equal(setupBindingId(root, entry), setupBindingId(alias, entry));
   if (process.platform === 'win32') {
     const { stdout } = await exec('cmd.exe', ['/d', '/c', 'for %I in ("%NATIVE_TEST_ROOT%") do @echo "%~sI"'],
-      { env: { ...process.env, NATIVE_TEST_ROOT: root } });
+      { env: { ...process.env, NATIVE_TEST_ROOT: root }, windowsVerbatimArguments: true });
     const shortRoot = stdout.trim().slice(1, -1);
     assert.ok(shortRoot);
     assert.equal(setupBindingId(root, entry), setupBindingId(shortRoot, entry));
