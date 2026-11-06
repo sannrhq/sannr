@@ -15,7 +15,7 @@ import { stagePackage } from '../scripts/stage-package.mjs';
 import { HOME_ENV_NAME, MCP_SERVER_KEY, NPM_PACKAGE, PRODUCT, TOOL_NAME } from '../lib/brand.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const PINS = { '@grpc/grpc-js': '1.14.7', '@grpc/proto-loader': '0.8.1', graphql: '17.0.2', protobufjs: '8.8.1', ws: '8.22.0' };
+const PINS = { '@grpc/grpc-js': '1.14.7', '@grpc/proto-loader': '0.8.1', graphql: '17.0.2', protobufjs: '8.8.1', ws: '8.22.1' };
 let scratch, project, home, installed, env, manifest, entries, installOutput;
 const sync = (command, args, cwd = ROOT, environment = process.env) => execFileSync(command, args,
   { cwd, env: environment, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
