@@ -1,6 +1,6 @@
 {
   "name": "@sannr/sannr",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "An API client for coding agents, with API knowledge recorded alongside your code.",
   "type": "module",
   "license": "Apache-2.0",
