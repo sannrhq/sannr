@@ -377,6 +377,33 @@ test('HTTP protocol envelopes show the bounded header selection and rate limits 
   assert.equal(throttled.headers['retry-after'], '7');
 });
 
+test('a GraphQL refusal says what it refused: the adapter message and bounded validation details', async t => {
+  // Seen on 2026-11-05: an invalid document against a saved schema answered
+  // only "The protocol request could not be prepared", so the agent could not
+  // tell which field or variable the schema rejected.
+  const f = await fixture(t, () => ({ body: { data: { item: { id: 'fixture' } } } }));
+  writeFileSync(join(f.dir, 'schema.graphql'), 'type Item { id: ID! } type Query { item(lookup: String): Item }');
+  const invalid = { ...query(), graphql: { ...query().graphql, schema: 'schema.graphql', document: 'query Item { item { id missingField } }' } };
+  for (const result of [await f.run(invalid)]) {
+    assert.equal(result.ok, false);
+    assert.equal(result.mode, 'refused');
+    assert.equal(result.error.code, 'GRAPHQL_VALIDATION_FAILED');
+    assert.equal(result.error.message, 'GraphQL document or variables do not match the schema.');
+    assert.equal(result.error.next, 'Check the adapter input and local schema.');
+    assert.match(result.error.details[0], /Cannot query field "missingField" on type "Item"/);
+  }
+  const value = 'private-variable-value-' + 'v'.repeat(16);
+  const variables = await f.run({ ...invalid, graphql: { ...query().graphql, schema: 'schema.graphql', variables: { lookup: { nested: value } } } });
+  assert.equal(variables.error.code, 'GRAPHQL_VALIDATION_FAILED');
+  assert.deepEqual(variables.error.details, ['Variable "$lookup" of type "String" is missing or does not match its declared type.']);
+  assert.ok(!JSON.stringify(variables).includes(value));
+  const ambiguous = await f.run({ ...query(), graphql: { document: 'query A { item { id } } query B { item { id } }' } });
+  assert.equal(ambiguous.error.code, 'GRAPHQL_OPERATION_REQUIRED');
+  assert.equal(ambiguous.error.message, 'Select exactly one declared GraphQL operation by name.');
+  assert.equal(ambiguous.error.details, undefined);
+  assert.equal(f.requests.length, 0, 'nothing was sent');
+});
+
 test('unavailable stream headers and mismatched protocol inputs are refused before dispatch', async t => {
   const f = await fixture(t, () => assert.fail('must refuse before dispatch'));
   const subscription = { protocol: 'graphql', path: '/graphql', graphql: { document: 'subscription Item { item }' } };
