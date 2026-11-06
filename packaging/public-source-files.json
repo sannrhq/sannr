@@ -139,6 +139,7 @@
     "lib/onboarding.mjs",
     "lib/operation-anchor.mjs",
     "lib/operation-context.mjs",
+    "lib/os-open.mjs",
     "lib/output-path.mjs",
     "lib/pointer-context.mjs",
     "lib/postman-workspace.mjs",

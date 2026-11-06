@@ -39,7 +39,10 @@ unsafe output path). Content never refuses the page; see
 last scan of the rendered page found a value that withholding missed, which is a
 bug; the error names the section, never the value, and nothing is written. An
 existing page survives a refusal. A failed opener reports `VIEW_OPEN_FAILED`
-after the file has been written.
+after the file has been written. The opener is `open` on macOS, `xdg-open` on
+Linux and, on Windows, PowerShell's `Start-Process`, which receives the path
+through an environment variable rather than as command text; explorer.exe is
+not used because it exits 1 even after it has opened the file.
 
 ## Explicit reads before a snapshot
 

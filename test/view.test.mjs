@@ -11,6 +11,7 @@ import { seedViewFixture, AT } from "./fixtures/view/fixture.mjs";
 import { buildViewModel, renderViewHtml } from "../lib/view.mjs";
 import { recordViewModel } from "../lib/view-records.mjs";
 import { renderMapText } from "../lib/map.mjs";
+import { osOpenLaunch } from "../lib/os-open.mjs";
 import { freshnessFor, liveContractDigest, loadContext } from "../lib/context.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -208,11 +209,9 @@ test("view opens only on opt-in, with network and listener APIs disabled", t => 
       if (typeof module[name] === 'function') module[name] = forbidden;
     const original = child.execFileSync;
     child.execFileSync = (command, args, options) => {
-      if (['open', 'xdg-open', 'explorer.exe'].includes(command)) {
-        writeFileSync(${JSON.stringify(marker)}, JSON.stringify(args)); return '';
-      }
-      if (command !== 'git') throw new Error('Unexpected process');
-      return original(command, args, options);
+      if (command === 'git') return original(command, args, options);
+      writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ command, args, target: options?.env?.OS_OPEN_TARGET ?? null, windowsHide: options?.windowsHide === true }));
+      return '';
     };
     child.spawn = child.spawnSync = forbidden;
     syncBuiltinESMExports();
@@ -224,7 +223,23 @@ test("view opens only on opt-in, with network and listener APIs disabled", t => 
   const opened = run(root, ["view", "--open", "--json"], env);
   assert.equal(opened.status, 0, opened.stderr);
   assert.equal(JSON.parse(opened.stdout).opened, true);
-  assert.deepEqual(JSON.parse(readFileSync(marker, "utf8")), [join(root, `${LAYOUT.evidence}/view/index.html`)]);
+  const out = join(root, `${LAYOUT.evidence}/view/index.html`), expected = osOpenLaunch(out), recorded = JSON.parse(readFileSync(marker, "utf8"));
+  assert.equal(recorded.command, expected.command);
+  assert.deepEqual(recorded.args, expected.args);
+  assert.equal(recorded.target, expected.env?.OS_OPEN_TARGET ?? null);
+  assert.equal(recorded.windowsHide, true, "no console window on Windows");
+  assert.ok([...recorded.args, recorded.target].includes(out), "the opener receives the written file");
+});
+
+test("view --open never hands the file to explorer.exe, whose exit code says nothing", () => {
+  const file = ["C:", "repo", "evidence", "view", "index.html"].join("\\");
+  assert.deepEqual(osOpenLaunch(file, { platform: "darwin" }), { command: "open", args: [file] });
+  assert.deepEqual(osOpenLaunch(file, { platform: "linux" }), { command: "xdg-open", args: [file] });
+  const windows = osOpenLaunch(file, { platform: "win32", env: { SystemRoot: ["D:", "Win"].join("\\") } });
+  assert.equal(windows.command, ["D:", "Win", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"].join("\\"));
+  assert.deepEqual(windows.args, ["-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath $env:OS_OPEN_TARGET"]);
+  assert.deepEqual(windows.env, { OS_OPEN_TARGET: file });
+  assert.ok(!windows.args.includes(file), "no character of the path reaches a shell parser");
 });
 
 test("view names the exact project commit, even with a dirty store", t => {
