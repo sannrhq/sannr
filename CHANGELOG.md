@@ -19,6 +19,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   drive and UNC paths instead of spelling them, so the release gate's
   tracked-file hygiene check (no machine absolute paths) passes again; it
   failed on the 0.1.0-beta.2 tag.
+- The optional gRPC adapter now pins `@grpc/grpc-js` 1.14.7 (upstream: a retry
+  timer is cleared when a call is cancelled, and a write error after an HTTP/2
+  reset reports the reset code in its status), with the hash catalog
+  regenerated so the adapter still loads.
 
 ## [0.1.0-beta.2] - 2026-11-05
 
