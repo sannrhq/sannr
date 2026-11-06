@@ -161,6 +161,7 @@
     "lib/request-input-schema.mjs",
     "lib/request-private-inputs.mjs",
     "lib/response-bounds.mjs",
+    "lib/response-headers.mjs",
     "lib/response-change-notice.mjs",
     "lib/response-inspection.mjs",
     "lib/response-redaction.mjs",
