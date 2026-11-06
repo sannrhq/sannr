@@ -17,6 +17,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   of explorer.exe, which exits 1 after a successful open and so made every
   `--open` report `VIEW_OPEN_FAILED` with exit 1 although the page had opened.
   macOS and Linux output is unchanged.
+- The optional gRPC adapter now pins `@grpc/grpc-js` 1.14.7 (upstream: a retry
+  timer is cleared when a call is cancelled, and a write error after an HTTP/2
+  reset reports the reset code in its status), with the hash catalog
+  regenerated so the adapter still loads.
 - Native Windows is supported from this version: Windows paths and `node.exe`
   are used directly for MCP registration, a package-manager MCP launch runs
   npm's JavaScript entry under Node instead of executing `npx.cmd`, packaged
