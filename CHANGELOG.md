@@ -23,6 +23,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   timer is cleared when a call is cancelled, and a write error after an HTTP/2
   reset reports the reset code in its status), with the hash catalog
   regenerated so the adapter still loads.
+- The optional WebSocket adapter, used for GraphQL subscriptions, now pins `ws`
+  8.22.1 (upstream: IPC URL paths are no longer cut at a colon, frames never
+  carry empty chunks, and Node's own masking is used where available), with
+  the hash catalog regenerated so the adapter still loads.
 
 ## [0.1.0-beta.2] - 2026-11-05
 
