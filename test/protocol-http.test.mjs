@@ -74,9 +74,22 @@ test('GraphQL validates SDL and variables locally without retaining scalar value
     await assert.rejects(prepareGraphql(gql({ schema: 'schema.graphql', variables }), { root }), error => {
       assert.equal(error.code, 'GRAPHQL_VALIDATION_FAILED');
       assert.doesNotMatch(error.message, /not-an-id|private/);
+      // The detail names the variable and its declared type, never the value.
+      assert.deepEqual(error.details, ['Variable "$id" of type "ID!" is missing or does not match its declared type.']);
       return true;
     });
-  await assert.rejects(prepareGraphql(gql({ schema: 'schema.graphql', document: '{ missingField }' }), { root }), { code: 'GRAPHQL_VALIDATION_FAILED' });
+  await assert.rejects(prepareGraphql(gql({ schema: 'schema.graphql', document: '{ missingField }' }), { root }), error => {
+    assert.equal(error.code, 'GRAPHQL_VALIDATION_FAILED');
+    assert.equal(error.details.length, 1);
+    assert.match(error.details[0], /Cannot query field "missingField" on type "Query"\. \(line 1, column 3\)/);
+    return true;
+  });
+  const many = `{ ${Array.from({ length: 8 }, (_, i) => `missing${i}`).join(' ')} }`;
+  await assert.rejects(prepareGraphql(gql({ schema: 'schema.graphql', document: many }), { root }), error => {
+    assert.equal(error.details.length, 6, 'five details and a count of the rest');
+    assert.equal(error.details[5], '…and 3 more.');
+    return true;
+  });
   assert.equal((await prepareGraphql({ graphql: { document: 'mutation R { rename(id: "one", label: "private-label") { id } }', schema: 'schema.graphql' } }, { root })).effect, 'write');
 });
 

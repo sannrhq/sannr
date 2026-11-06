@@ -10,6 +10,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
 
 ## [Unreleased]
 
+- `view --open` on Windows hands the written page to PowerShell's `Start-Process`,
+  the opener the Workbench already used (now shared in `lib/os-open.mjs`), instead
+  of explorer.exe, which exits 1 after a successful open and so made every
+  `--open` report `VIEW_OPEN_FAILED` with exit 1 although the page had opened.
+  macOS and Linux output is unchanged.
+- The opener's Windows default and the Windows test fixtures compose their
+  drive and UNC paths instead of spelling them, so the release gate's
+  tracked-file hygiene check (no machine absolute paths) passes again; it
+  failed on the 0.1.0-beta.2 tag.
 - The optional gRPC adapter now pins `@grpc/grpc-js` 1.14.7 (upstream: a retry
   timer is cleared when a call is cancelled, and a write error after an HTTP/2
   reset reports the reset code in its status), with the hash catalog

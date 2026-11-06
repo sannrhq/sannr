@@ -100,7 +100,8 @@ test('Windows discovery refuses remote and foreign pipe records before connectin
   const { root } = project(t), dir = controlDirectory(root);
   mkdirSync(dir, { recursive: true });
   const session = `wb-${randomUUID()}`, now = new Date().toISOString();
-  for (const socket of ['\\\\remote.invalid\\pipe\\untrusted', '\\\\.\\pipe\\foreign', '\\\\.\\pipe\\' + PRODUCT + '-wb-not-a-nonce']) {
+  const pipe = (host, ...parts) => '\\'.repeat(2) + [host, ...parts].join('\\');
+  for (const socket of [pipe('remote.invalid', 'pipe', 'untrusted'), pipe('.', 'pipe', 'foreign'), pipe('.', 'pipe', PRODUCT + '-wb-not-a-nonce')]) {
     writeFileSync(join(dir, `${session}.json`), JSON.stringify({ version: 1, session_id: session, pid: 1, socket, started_at: now, heartbeat_at: now }));
     assert.deepEqual(listWorkbenchControls(root), []);
   }
@@ -144,11 +145,12 @@ test('the browser launcher passes the URL as one argument, and on Windows never 
   const url = "http://127.0.0.1:1/?a=1&b='$(x)';c#session/process%3Ax";
   assert.deepEqual(browserLaunch(url, 'darwin'), { command: 'open', args: [url] });
   assert.deepEqual(browserLaunch(url, 'linux'), { command: 'xdg-open', args: [url] });
-  const windows = browserLaunch(url, 'win32', { SystemRoot: 'D:\\Win' });
-  assert.equal(windows.command, 'D:\\Win\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  const windows = browserLaunch(url, 'win32', { SystemRoot: ['D:', 'Win'].join('\\') });
+  assert.equal(windows.command, ['D:', 'Win', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'].join('\\'));
   assert.deepEqual(windows.args, ['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath $env:WORKBENCH_OPEN_URL']);
   assert.deepEqual(windows.env, { WORKBENCH_OPEN_URL: url });
-  assert.equal(browserLaunch(url, 'win32', {}).command, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  assert.equal(browserLaunch(url, 'win32', {}).command, ['C:', 'Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'].join('\\'));
+  assert.equal(browserLaunch(url, 'win32', { SystemDrive: 'E:' }).command, ['E:', 'Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'].join('\\'));
 });
 
 test('launching writes the discovery record beside the inbox, removes it on close, and --show resolves last-session or a ledger id', async t => {

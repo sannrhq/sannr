@@ -2662,8 +2662,12 @@ async function cmdView(argv) {
     return;
   }
   if (argv.includes("--open")) {
-    const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer.exe" : "xdg-open";
-    try { execFileSync(command, [out], { stdio: "ignore" }); }
+    // The OS opener (lib/os-open.mjs). On Windows that is PowerShell's
+    // Start-Process, never explorer.exe, which exits 1 after a successful
+    // open and so reported VIEW_OPEN_FAILED for every opened file.
+    const { osOpenLaunch, osOpenSpawnOptions } = await import("../lib/os-open.mjs");
+    const launch = osOpenLaunch(out);
+    try { execFileSync(launch.command, launch.args, { stdio: "ignore", ...osOpenSpawnOptions(launch) }); }
     catch {
       console.error(JSON.stringify({ code: "VIEW_OPEN_FAILED", path: out, message: "The snapshot was written; the OS opener failed." }));
       process.exitCode = 1;

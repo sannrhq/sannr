@@ -73,7 +73,11 @@ this machine. Below 880 pixels wide the page scrolls sideways.
   same operation; **Add notes**, where you save a response, and **New note on
   this operation**, which writes a note to the ledger beside this one; and
   **Verify** or **Re-verify** with a prompt to copy into your coding agent. **J** moves to the
-  next note and **K** to the previous one when no text box has focus.
+  next note and **K** to the previous one when no text box has focus. A note on
+  a GraphQL operation (`query Name`, `mutation Name` or `subscription Name`, as
+  `note` and the GraphQL adapter record it) opens the same way; its trace has no
+  contract declaration, because an OpenAPI contract declares no GraphQL
+  operation.
 - **Right: the trace.** From the claim back to the contract: the claim, the
   evidence run the ledger links (its recorded state), the run's scope against
   the ledger's contract digest, the shared observation of that run if one

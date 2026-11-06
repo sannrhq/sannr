@@ -120,6 +120,27 @@ test('a single-store repository opens every trace and saves responses, and ident
     await assert.rejects(handlers.note.run(bad), { code: 'WORKBENCH_NOTE_INVALID' });
 });
 
+test('a GraphQL note opens its trace and takes a response like an HTTP note', async t => {
+  // Seen on 2026-11-05: a note on `query Country` was listed, but opening it
+  // answered WORKBENCH_NOTE_INVALID, so the trace and verify prompt were empty.
+  const { handlers, note } = lab(t, { survey: false });
+  note('parcel', 'query Country', 'country(code) returns null for an unknown code rather than an error.');
+  const index = await handlers.workbench.run({});
+  const row = find(index, 'query Country');
+  assert.ok(row, 'the GraphQL note is listed');
+  const detail = await handlers.note.run(identity(row));
+  assert.equal(detail.operation, 'query Country');
+  assert.equal(detail.note_id, row.note_id);
+  assert.match(detail.text, /unknown code/u);
+  assert.equal(detail.evidence.length, 0, 'no run is attached; the claim rests on the author');
+  assert.equal(detail.contract.operation_id, 'query Country', 'an OpenAPI contract declares no GraphQL operation');
+  const saved = await handlers.respond.run({ ...identity(row), text: 'Checked against the Countries API.' });
+  assert.equal(saved.key, JSON.stringify(['parcel', 'query Country', row.note_id]));
+  assert.deepEqual(saved.responses.map(item => item.text), ['Checked against the Countries API.']);
+  for (const bad of ['query', 'query Country extra words', 'subscription Country sha256:short', 'custom-rpc inventory.lookup'])
+    await assert.rejects(handlers.note.run({ ...identity(row), operation: bad }), { code: 'WORKBENCH_NOTE_INVALID' });
+});
+
 test('responses: a save returns only its note, the index carries listed notes within its budget, and nothing stored is deleted', async t => {
   const { root, handlers } = lab(t, { survey: false });
   const index = await handlers.workbench.run({});
