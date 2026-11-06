@@ -18,6 +18,17 @@ see [SUPPORT.md](../SUPPORT.md).
   runs the `./node_modules/.bin/sannr` form as written. The optional
   `--claude-hook` checks only Claude Code's Bash tool, so on Windows it does
   not cover commands run through Claude Code's PowerShell tool.
+- Not yet qualified on Windows. The full product suite, run on Windows through
+  the manual `windows_full` CI dispatch, still reports failures outside the
+  flows the Windows lanes verify on every change. Most are test-harness
+  assumptions, but these product behaviors are known not to work there yet:
+  `migrate` refuses an existing evidence directory because it checks for
+  POSIX mode 0600, which NTFS does not report; relative paths from source
+  scanning and some `connect` and `map` output use backslashes where the
+  committed knowledge format expects forward slashes; and a migrated
+  pre-layout registration can write an unescaped backslash into JSON. Treat
+  stack migration and source-derived paths on Windows as unsupported until a
+  release notes otherwise.
 - Claude Code, Codex and Cursor are the hosts `connect` registers. Cursor is
   detected only when a `.cursor/` directory already exists. Other MCP hosts can
   point at `sannr mcp serve` by hand, but setup does not write their files.
@@ -50,9 +61,15 @@ see [SUPPORT.md](../SUPPORT.md).
   documented bounds in [protocols](protocols.md). The adapters are optional,
   pinned packages; a missing one is named with its install command.
 - Not supported: generic server-sent events, incremental or multipart GraphQL
-  HTTP results, GraphQL subscriptions over legacy subprotocols, JSON-RPC wire
+  HTTP results, GraphQL over GET, persisted queries, GraphQL multipart file
+  uploads, GraphQL subscriptions over legacy subprotocols, JSON-RPC wire
   batches and notifications, an OpenRPC loader, gRPC reflection, and mutual
   TLS. Apollo GraphQL and Federation are planned.
+- GraphQL schema files are supplied by you (SDL or introspection JSON in the
+  project); Sannr does not fetch or write one, and does not validate returned
+  fields against it. Protocol observations are kept under `api_context` and
+  read with `context query --stack`; `show` and the Workbench list the notes
+  on a GraphQL operation, not those observations.
 - Protocol adapters do not retry or follow redirects. HTTP redirects follow the
   client's credential, body and method guards, and some are refused.
 
