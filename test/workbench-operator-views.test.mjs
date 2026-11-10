@@ -1,4 +1,5 @@
-// The Workbench's Activity and Request views as an operator observes them: the
+// The Workbench's Activity and Request views, and review decisions on the
+// Workbench view, as an operator observes them: the
 // packaged page script runs against the real engine handlers over the
 // synthetic Parcel Lab, whose API is a loopback service in its own process
 // that logs every request it receives. No vendor host, no real home directory.
@@ -10,6 +11,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadWorkbenchPage } from './helpers/workbench-dom.mjs';
+import { buildWorkbenchLab } from './fixtures/workbench-lab.mjs';
+import { fixtureContextFile } from './helpers/stack-fixture.mjs';
 import { workbenchHandlers } from '../lib/workbench-engine.mjs';
 import { ENV_PREFIX, HOME_ENV_NAME } from '../lib/brand.mjs';
 import { LAYOUT } from '../lib/layout.mjs';
@@ -255,4 +258,104 @@ test('every control in Activity and Request keeps keyboard focus across a repain
   const row = page.q('[data-act-row]'); row.focus();
   await page.click('[data-act-filter="failed"]');
   assert.ok(page.document.activeElement, 'focus is never dropped to nothing');
+});
+
+// Review decisions on the Workbench view, over the Parcel Lab's notes. No API
+// is behind this lab: recording a decision can send nothing.
+function notesLab(t, options = {}) {
+  const parent = mkdtempSync(join(tmpdir(), 'workbench-review-')), home = join(parent, 'home');
+  mkdirSync(home);
+  const owned = key => key === 'HOME' || key.startsWith('API_') || key.startsWith(`${ENV_PREFIX}_`);
+  const previous = Object.fromEntries(Object.entries(process.env).filter(([key]) => owned(key)));
+  for (const key of Object.keys(process.env)) if (owned(key)) delete process.env[key];
+  process.env.HOME = home; process.env[HOME_ENV_NAME] = join(home, '.state'); process.env.API_AUTHOR = 'Rae Reviewer';
+  t.after(() => { for (const key of Object.keys(process.env)) if (owned(key)) delete process.env[key];
+    Object.assign(process.env, previous); rmSync(parent, { recursive: true, force: true }); });
+  const env = { PATH: process.env.PATH, HOME: home, [HOME_ENV_NAME]: join(home, '.state') };
+  return buildWorkbenchLab(join(parent, 'repo'), { env, survey: false, ...options });
+}
+async function reviewPage(root) {
+  const page = loadWorkbenchPage(workbenchHandlers(root));
+  await page.settle(120);
+  await page.click('[data-filter="all"]');
+  return page;
+}
+// Select the note in the given evidence state and open its review decision.
+async function decide(page, state) {
+  await page.click(page.all('[data-note-row]').find(node => node.getAttribute('data-state') === state)); await page.settle(60);
+  await page.click('[data-review-decide-toggle]');
+}
+const reviews = (root, stack = 'parcel') => Object.values(JSON.parse(readFileSync(fixtureContextFile(root, stack), 'utf8')).operations ?? {})
+  .flatMap(entry => entry.note_reviews ?? []);
+async function write(page, selector, text) { await type(page, page.q(selector), text); }
+
+test('a person records trust from the note view: the ledger gets the review, the trace shows it, and overturning it needs a run', async t => {
+  const { root } = notesLab(t), page = await reviewPage(root);
+  await decide(page, 'ok');
+  assert.equal(page.q('[data-review-state]').getAttribute('data-review-state'), 'unreviewed');
+  assert.equal(page.all('[data-review-record]').length, 0, 'nothing can be recorded before a decision is chosen');
+  await page.click('[data-review-choice="trusted"]');
+  await write(page, '[data-focus="rev-limits"]', 'local only');
+  assert.equal(page.q('[data-review-author]').getAttribute('data-review-author'), 'Rae Reviewer');
+  assert.deepEqual(page.all('[data-review-form] button').filter(node => ![...node.attributes.keys()].some(name => name.startsWith('data-review-'))).map(node => node.textContent), [], 'every review control keeps focus across a repaint');
+  await page.click('[data-review-record]'); await page.settle(120);
+  assert.equal(page.text('[data-review-notice]'), 'Recorded as trusted.');
+  assert.deepEqual(reviews(root).map(({ decision, by, actor, limits, evidence }) => ({ decision, by, actor, limits, evidence })),
+    [{ decision: 'trusted', by: 'Rae Reviewer', actor: 'person', limits: 'local only', evidence: [] }]);
+  assert.match(page.text('[data-review-state]'), /^trusted by Rae Reviewer/u);
+  assert.match(page.text('[data-step="Claim"]'), /review.*trusted by Rae Reviewer.*limits: "local only"/u, 'the trace reads the review back');
+
+  // Disputing needs a reason, and overturning a trusted note needs a run.
+  await page.click('[data-review-choice="disputed"]');
+  assert.equal(page.q('[data-review-record]').disabled, true);
+  await write(page, '[data-focus="rev-text"]', 'It no longer returns a status field.');
+  assert.equal(page.q('[data-review-record]').disabled, false);
+  await page.click('[data-review-record]'); await page.settle(120);
+  assert.match(page.text('[data-review-problem]'), /^Not recorded\. Overturning a trusted note requires an attached run ID.*\(NOTE_REVIEW_EVIDENCE_REQUIRED\)$/u);
+  assert.equal(reviews(root).length, 1, 'a refused decision writes nothing');
+  assert.equal(page.q('[data-focus="rev-text"]').value, 'It no longer returns a status field.', 'the reason is kept for another try');
+});
+
+test('a dispute and a run request are recorded with their reasons, and the run request waits for an agent', async t => {
+  const { root } = notesLab(t), page = await reviewPage(root);
+  await decide(page, 'none');
+  await page.click('[data-review-choice="disputed"]');
+  await write(page, '[data-focus="rev-text"]', 'Nothing confirms this.');
+  await page.click('[data-review-record]'); await page.settle(120);
+  assert.equal(page.text('[data-review-notice]'), 'Recorded as disputed.');
+  await decide(page, 'mismatch');
+  await page.click('[data-review-choice="run-requested"]');
+  assert.equal(page.all('[data-focus="rev-evidence"]').length, 0, 'a run request takes no evidence');
+  await write(page, '[data-focus="rev-text"]', 'Check the 422 without window.');
+  await page.click('[data-review-record]'); await page.settle(120);
+  assert.equal(page.text('[data-review-notice]'), 'Run requested. It waits in the repository inbox for an agent. Nothing runs because a run was requested.');
+  assert.match(page.text('[data-review-state]'), /run-requested by Rae Reviewer.*request: open/u);
+  const recorded = [...reviews(root), ...reviews(root, 'ledger')].map(({ decision, reason, actor }) => [decision, reason, actor]).sort();
+  assert.deepEqual(recorded, [['disputed', 'Nothing confirms this.', 'person'], ['run-requested', 'Check the 422 without window.', 'person']]);
+});
+
+test('retiring a note asks twice, adds a retirement note and selects it', async t => {
+  const { root } = notesLab(t), page = await reviewPage(root);
+  const count = page.all('[data-note-row]').length;
+  await decide(page, 'none');
+  const retired = page.text('[data-note-text]');
+  await page.click('[data-review-choice="retire"]'); await page.click('[data-review-retire="removed"]');
+  await write(page, '[data-focus="rev-text"]', 'The endpoint was removed.');
+  await page.click('[data-review-record]');
+  assert.equal(page.q('[data-review-record]').getAttribute('data-review-record'), 'confirm', 'the first press only asks');
+  assert.ok(!readFileSync(fixtureContextFile(root, 'parcel'), 'utf8').includes('The endpoint was removed.') && !readFileSync(fixtureContextFile(root, 'ledger'), 'utf8').includes('The endpoint was removed.'));
+  await page.click('[data-review-cancel]');
+  assert.equal(page.q('[data-review-record]').getAttribute('data-review-record'), 'retire');
+  await page.click('[data-review-record]'); await page.click('[data-review-record]'); await page.settle(160);
+  assert.match(page.text('[data-review-notice]'), /^Retired the note on .+\. A retirement note was added to the ledger\.$/u);
+  assert.match(page.text('[data-note-text]'), /^Retired sha256:[0-9a-f]{64} \(removed\): The endpoint was removed\.$/u, 'the retirement note is selected');
+  assert.equal(page.all('[data-note-row]').length, count, 'the retired note gives way to its retirement note');
+  assert.ok(!page.all('[data-note-row]').some(node => node.textContent.includes(retired)));
+});
+
+test('with no named stacks the review decision is drawn disabled and names the migration command', async t => {
+  const { root } = notesLab(t, { singleStore: true }), page = await reviewPage(root);
+  await page.click('[data-review-decide-toggle]');
+  assert.ok(page.all('[data-review-choice]').every(node => node.disabled));
+  assert.match(page.text('[data-review-readonly]'), /Reviews can’t be recorded here until this repository moves to named stacks.*migrate --dry-run/u);
 });

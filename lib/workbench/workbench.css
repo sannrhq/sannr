@@ -311,3 +311,6 @@ button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent
 .req-methods + .req-row { margin-top: 12px; }
 .compose textarea.req-structure { font-family: var(--mono); font-size: 12px; }
 .req-save { margin-top: 12px; display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 8px 12px; }
+.review-form { margin-top: 12px; display: flex; flex-direction: column; align-items: stretch; gap: 10px; }
+.review-choices { display: inline-flex; flex-wrap: wrap; align-self: flex-start; }
+.review-form .compose { margin-top: 0; }

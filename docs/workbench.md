@@ -72,8 +72,10 @@ this machine. Below 880 pixels wide the page scrolls sideways.
   **Mismatch** when any note is a mismatch, otherwise on **All**.
 - **Middle: one note.** The operation, its author, date, basis, stated
   environment and stack, the note text and a status line; other notes on the
-  same operation; **Add notes**, where you save a response, and **New note on
-  this operation**, which writes a note to the ledger beside this one; and
+  same operation; **Add notes**, where you save a response; **New note on
+  this operation**, which writes a note to the ledger beside this one;
+  **Review decision**, where you record trust, a dispute, a request for a run
+  or a retirement (below); and
   **Verify** or **Re-verify** with a prompt to copy into your coding agent. **J** moves to the
   next note and **K** to the previous one when no text box has focus. A note on
   a GraphQL operation (`query Name`, `mutation Name` or `subscription Name`, as
@@ -230,6 +232,33 @@ In a repository with no named stacks (the single-store layout) the ledger takes
 no notes until migration, from the CLI or the page, so both boxes are drawn
 disabled with a line naming `sannr migrate --dry-run`.
 
+### Recording a review decision
+
+**Review decision**, under a note, shows the note's current review (or
+"unreviewed") and opens four choices. Each is written to the ledger through the
+same functions as `sannr review` and the `api_note_review` MCP tool, attributed
+to the author marker (`API_AUTHOR`, else `git config user.name`, else `agent`)
+as a person. Recording a decision sends no API request.
+
+- **Trust** records `trusted`, with optional limits such as "local only" or a
+  version.
+- **Dispute** records `disputed` and needs a reason. Overturning a note that
+  was trusted also needs a run ID as evidence; the page shows the refusal and
+  keeps what you typed.
+- **Ask for a run** records `run-requested` with what to check, and queues a
+  run request in the repository inbox for an agent. Nothing runs because a run
+  was requested.
+- **Retire** adds a retirement note that supersedes this one. Choose why
+  (false, removed, replaced by a version, no longer applies, other) and say
+  why in a sentence. The first press only asks; the second writes. The
+  retirement note is then selected in the retired note's place.
+
+Trust, Dispute and Retire take optional run IDs as evidence. A refusal writes
+nothing and is shown with its code. Batch decisions and superseding one note
+with another remain with `sannr review` and the `api_note_review` MCP tool. In
+a repository with no named stacks the choices are drawn disabled, as the note
+boxes are.
+
 ### Settings
 
 The settings popover has **Appearance**: Light (the default), Dark or System. The choice is
@@ -245,7 +274,7 @@ were replaced by the views above. Their functions also remain available headless
 
 | Earlier screen | Where it is now |
 | --- | --- |
-| Review decisions (trust, dispute, retire, ask for a run, batches) | `sannr review` and the `api_note_review` MCP tool; existing review records show in the trace |
+| Review decisions (trust, dispute, retire, ask for a run, batches) | Trust, dispute, ask for a run and retire under a note on the Workbench view; batches and supersession with `sannr review` and the `api_note_review` MCP tool; review records show in the trace |
 | Activity and the agent session view | The Activity view lists recorded requests; a whole agent session reads with `sannr sessions` and the session summary an agent quotes |
 | API map | The Map view, drawn from the same retained survey |
 | APIs and operation detail | `sannr show '<METHOD /path>'`, notes on the Workbench view |

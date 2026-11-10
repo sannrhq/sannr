@@ -20,6 +20,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   Entered values stay in the tab and are never saved. The page still opens on
   the Workbench view, and opening a view sends no request. See
   `docs/workbench.md` and `docs/workbench-security.md`.
+- On the Workbench view, **Review decision** under a note records trust, a
+  dispute, a request for a run or a retirement to the ledger, as `review` does
+  headlessly: attributed to the author marker as a person, with a second
+  confirmation before a retirement, and no API request. A refusal writes
+  nothing and is shown with its code. Batches and supersession stay headless.
 - `view --open` on Windows hands the written page to PowerShell's `Start-Process`,
   the opener the Workbench already used (now shared in `lib/os-open.mjs`), instead
   of explorer.exe, which exits 1 after a successful open and so made every

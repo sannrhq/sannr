@@ -62,7 +62,7 @@ stack.
 
 ### Writes to shared files
 
-Three things you do on the page can change files you commit.
+Four things you do on the page can change files you commit.
 
 **Saving a note you typed** writes the stack's knowledge file. It goes through the same writer as
 `sannr note --actor person`, with the same author marker, date, history,
@@ -70,6 +70,14 @@ conflict and credential refusals, and the same managed pointer refresh. It
 never edits, supersedes, retires or reviews a note, takes no evidence and sends
 no request. The operation must be one the survey, the contract or the stack's
 knowledge already names, and a refusal leaves the file unchanged.
+
+**Recording a review decision**, under a note, also writes the stack's knowledge
+file, through the same functions as `sannr review` and the `api_note_review`
+MCP tool: a trust, dispute or run-request record, or a retirement note that
+supersedes the selected note. It is attributed to the author marker as a
+person, takes run IDs only as evidence and sends no request, and a refusal
+leaves the file unchanged. A run request also adds an entry to the repository's
+private inbox. A retirement is written only on a second confirmation.
 
 **Send request**, in the Request view, runs one request through the same client
 as the CLI and MCP server. Like any request through that client it writes
@@ -85,8 +93,8 @@ references only. Values you entered are never written.
 The page's other actions write only the private, gitignored Workbench files
 under the evidence folder, or nothing.
 
-The same token can also reach actions the page does not call: the review
-actions (record a review, supersession or retirement) and the handoff inbox.
+The same token can also reach actions the page does not call: batch review,
+supersession of one note by another, and the handoff inbox.
 Treat a paired token as able to do all of these.
 
 ### Responses and private evidence
