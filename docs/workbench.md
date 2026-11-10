@@ -61,7 +61,9 @@ one object:
   `failed`, `unavailable` or `not-requested`.
 - `page.state`: `connected` when the opened page reached the workbench within
   about four seconds, else `not-observed`. An accepted opener request does not
-  show that a page rendered, and the result never says it does.
+  show that a page rendered, and the result never says it does. When no page
+  was opened it is `not-requested` (`--no-open`) or `not-opened` (the browser
+  could not be opened).
 - `stop`: the command that stops this checkout's workbench.
 
 Without `--json` the same facts print as a few lines.
@@ -81,8 +83,10 @@ ask your agent or run `workbench open`. Only a launch connects a tab.
 other (`--project <path>` for another checkout). `sannr workbench status` says
 whether one is running, its URL and how many pages are connected. Left alone,
 a background workbench stops 30 minutes after the last request from a page (an
-open page checks in once a minute) and after eight hours in any case. Closing a
-tab stops nothing by itself. After it stops, tabs that were open show the
+open page checks in once a minute) and after eight hours in any case. It also
+stops within seconds if its folder under `.sannr/evidence/workbench/launch/`
+is deleted, for example when the checkout or worktree is removed, and it does
+not create that folder again. Closing a tab stops nothing by itself. After it stops, tabs that were open show the
 not-connected screen; `open` starts it again, on a new port, in a new tab. In
 a process list the background workbench is the CLI running
 `workbench serve --project <path>`; `open` starts that, and it is not meant to
@@ -158,6 +162,8 @@ unreachable terminal needs to be relaunched.
 
 The header reads **Sannr Workbench** or **Sannr Map**, then the API name, then a
 **Workbench | Activity | Request | Map** switch and a round settings button.
+Once connected, the browser tab's title starts with the repository's folder
+name, so tabs for different repositories can be told apart.
 The page opens on the Workbench view.
 
 ### Workbench view

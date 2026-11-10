@@ -132,8 +132,10 @@ export function createWorkbenchDom({ product = 'Product' } = {}) {
  * fragment the tab was opened with; `storage` is the tab's sessionStorage (a
  * Map a test keeps across loads to stand for a reload); `grants` maps each
  * unused launch grant to the token it yields, once; `tokens` is the set of
- * session tokens the service accepts. The returned `address` is what the
- * address bar holds, and `wire` lists every request path with its headers. */
+ * session tokens the service accepts; `frozenAddress` makes the browser refuse
+ * to rewrite the address bar, and `noStorage` gives the tab no sessionStorage
+ * at all. The returned `address` is what the address bar
+ * holds, and `wire` lists every request path with its headers. */
 export function loadWorkbenchPage(handlers, { dark = false, product = 'Product', innerWidth, launch = null } = {}) {
   const { document, dispatch } = createWorkbenchDom({ product });
   const wire = [], address = { hash: launch?.hash ?? '', pathname: '/', search: '' };
@@ -169,9 +171,11 @@ export function loadWorkbenchPage(handlers, { dark = false, product = 'Product',
   const storage = launch && { getItem: key => launch.storage.has(key) ? launch.storage.get(key) : null,
     setItem: (key, value) => { launch.storage.set(key, String(value)); }, removeItem: key => { launch.storage.delete(key); } };
   const context = createContext({ document, window, innerWidth,
-    ...(launch ? { location: address, sessionStorage: storage, URLSearchParams, setInterval: () => 0,
+    ...(launch ? { location: address, ...(launch.noStorage ? {} : { sessionStorage: storage }), URLSearchParams, setInterval: () => 0,
       // The page rewrites the address bar; only the path and query remain.
-      history: { replaceState: (_state, _title, url) => { address.hash = String(url).includes('#') ? String(url).slice(String(url).indexOf('#')) : ''; } } } : {}),
+      history: { replaceState: (_state, _title, url) => {
+        if (launch.frozenAddress) throw new Error('The address cannot be rewritten.');
+        address.hash = String(url).includes('#') ? String(url).slice(String(url).indexOf('#')) : ''; } } } : {}),
     navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
     matchMedia: () => media, setTimeout: (fn, ms) => {
       // Pairing's simulated poll has no clock dependency. A real zero-delay

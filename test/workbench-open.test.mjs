@@ -8,14 +8,14 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { HOME_ENV_NAME } from '../lib/brand.mjs';
 import { LAYOUT } from '../lib/layout.mjs';
-import { openWorkbench, serviceRecordPath, stopWorkbenchService } from '../lib/workbench-launch.mjs';
+import { launchDirectory, openWorkbench, serviceRecordPath, stopWorkbenchService } from '../lib/workbench-launch.mjs';
 import { launchWorkbench } from '../lib/workbench-cli.mjs';
 import { askWorkbenchControl, listWorkbenchControls } from '../lib/workbench-control.mjs';
 import { createFixtureStack, fixtureContextFile } from './helpers/stack-fixture.mjs';
@@ -205,6 +205,34 @@ test('simultaneous opens converge on one instance; a killed service, a squatted 
   assert.deepEqual(committed(root), before); assert.deepEqual(s.seen, []);
 });
 
+test('a lock left by a dead opener is cleared, one that cannot be cleared is a named refusal, and a removed launch folder stops the service for good', async t => {
+  const s = await scene(t), root = await s.checkout('locks'), lock = join(launchDirectory(root), 'launch.lock');
+  assert.equal((await s.json(root, ['workbench', 'open', '--no-open'])).value.instance.state, 'created');
+  assert.equal((await s.json(root, ['workbench', 'stop'])).value.state, 'stopped');
+  // An opener that died mid-launch: its lock names a process that no longer exists.
+  const gone = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' }); await once(gone, 'close');
+  writeFileSync(lock, JSON.stringify({ pid: gone.pid, at: new Date().toISOString(), id: 'dead' }));
+  const cleared = await s.json(root, ['workbench', 'open', '--no-open']);
+  assert.equal(cleared.code, 0, cleared.stderr); assert.equal(cleared.value.instance.state, 'created');
+  assert.equal(existsSync(lock), false);
+  assert.equal((await s.json(root, ['workbench', 'stop'])).value.state, 'stopped');
+  // Something that is not a lock sits at the lock's name and cannot be cleared.
+  mkdirSync(lock); utimesSync(lock, new Date(Date.now() - 3600_000), new Date(Date.now() - 3600_000));
+  await assert.rejects(openWorkbench(root, { open: false, env: s.env, deadlineMs: 300 }), { code: 'WORKBENCH_LAUNCH_BUSY' });
+  assert.equal((await s.json(root, ['workbench', 'status'])).value.state, 'not-running', 'the refusal started nothing');
+  rmSync(lock, { recursive: true });
+
+  // The checkout's private files are removed under a running service.
+  const running = await s.json(root, ['workbench', 'open', '--no-open']), { pid } = (await s.json(root, ['workbench', 'status'])).value.instance;
+  assert.equal(running.value.instance.state, 'created');
+  rmSync(join(root, LAYOUT.evidence, 'workbench'), { recursive: true });
+  const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  for (let waited = 0; alive() && waited < 30_000; waited += 100) await delay(100);
+  assert.equal(alive(), false, 'the service stopped once its launch folder was gone');
+  assert.equal(existsSync(join(root, LAYOUT.evidence, 'workbench', 'launch')), false, 'and it put nothing back');
+  assert.equal((await pageRequest(new URL(running.value.url).origin, '/action', { action: 'workbench', params: {} })).status, 0);
+});
+
 test('a missing or unconfigured target, a failed opener and an unanswered launch are separate named outcomes', { skip: noStandIn }, async t => {
   const s = await scene(t), root = await s.checkout('named');
   const missing = await s.json(root, ['workbench', 'open', '--project', join(s.base, 'nowhere')]);
@@ -345,7 +373,7 @@ test('the opened page spends its launch once, clears it from the address bar, st
   assert.equal(opened.q('#app').getAttribute('data-view'), 'activity', 'the view the launch named is showing');
   assert.deepEqual(opened.wire.filter(row => row.path === '/launch/redeem').map(row => row.headers['x-workbench-launch']), ['grant-one']);
   assert.ok(opened.wire.filter(row => row.path === '/action').every(row => row.headers['x-workbench-token'] === 'token-one'));
-  assert.ok(![...tab.values()].some(value => value.includes('grant-one')), 'the tab keeps its session, never the launch');
+  assert.ok(![...tab.values()].some(value => value.includes('grant-one')), 'the tab keeps its session, not the launch');
 
   // Reload: the same tab, no fragment, no second exchange.
   const reloaded = load('');
@@ -359,6 +387,33 @@ test('the opened page spends its launch once, clears it from the address bar, st
   assert.equal(reloaded.address.hash, ''); assert.equal(shown(reloaded), true);
   assert.equal(reloaded.q('#app').getAttribute('data-view'), 'map');
   assert.equal(reloaded.wire.at(-1).headers['x-workbench-token'], 'token-two');
+
+  // A launch that is refused leaves this connected tab as it was.
+  await reloaded.arrive('#launch=never-issued');
+  assert.equal(reloaded.address.hash, ''); assert.equal(shown(reloaded), true);
+  await reloaded.click('[data-mode="workbench"]');
+  assert.equal(reloaded.q('#app').getAttribute('data-view'), 'workbench');
+  assert.equal(reloaded.wire.at(-1).headers['x-workbench-token'], 'token-two', 'the tab still acts with its own session');
+  assert.match(reloaded.document.title, /^page · /u, 'the tab is titled with its repository');
+
+  // The same holds in a browser that gives the tab no storage to fall back on.
+  grants.set('grant-memory', 'token-memory');
+  const bare = loadWorkbenchPage(handlers, { launch: { hash: '#launch=grant-memory', grants, tokens, noStorage: true } });
+  await bare.settle(60);
+  await bare.arrive('#launch=never-issued');
+  assert.equal(shown(bare), true, 'a refused launch does not disconnect a tab that holds its session only in memory');
+  await bare.click('[data-mode="map"]');
+  assert.equal(bare.q('#app').getAttribute('data-view'), 'map'); assert.equal(bare.wire.at(-1).headers['x-workbench-token'], 'token-memory');
+
+  // A browser that will not rewrite the address shows the same launch again
+  // on reload; the tab does not spend it twice and stays connected.
+  grants.set('grant-frozen', 'token-frozen');
+  const frozen = new Map(), stuck = () => loadWorkbenchPage(handlers, { launch: { hash: '#launch=grant-frozen', storage: frozen, grants, tokens, frozenAddress: true } });
+  const first = stuck(); await first.settle(60);
+  assert.equal(shown(first), true);
+  const second = stuck(); await second.settle(60);
+  assert.equal(shown(second), true);
+  assert.deepEqual(second.wire.filter(row => row.path === '/launch/redeem'), [], 'a launch this tab already spent is not presented again');
 
   // Another tab with only the plain URL: no session, no request for data.
   const stranger = load('', new Map());

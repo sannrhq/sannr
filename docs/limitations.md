@@ -117,9 +117,9 @@ see [SUPPORT.md](../SUPPORT.md).
   background process per checkout that stops 30 minutes after its last page
   request or after 8 hours; a tab it left open then shows a not-connected
   screen and does not reconnect by itself.
-- Each `workbench open` opens a new browser tab. It cannot bring an existing
-  tab forward, and it opens the browser only on the machine that runs the
-  command.
+- Each `workbench open` hands the browser a new address to open, which
+  browsers show in a new tab. It cannot bring an existing tab forward, and it
+  opens the browser only on the machine that runs the command.
 - No secret store. Credentials come from the stack's environment source; the
   page shows reference names and readiness, never values.
 - The Request view sends HTTP requests with JSON or form bodies, one at a

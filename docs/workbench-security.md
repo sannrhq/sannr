@@ -66,10 +66,11 @@ and JSON checks as every other private route.
 
 - The plain address, which results and status print, gives only the public
   page. A tab opened on it stays on a not-connected screen.
-- A grant that was used cannot be used again. Presenting it a second time is
-  refused and also ends the session its first use created, so a copy that
-  raced the browser turns into a visible failed open rather than a second
-  reader.
+- A grant that was used cannot be used again. Presenting it a second time
+  within ten minutes of its issue is refused and also ends the session its
+  first use created, so a copy that raced the browser turns into a visible
+  failed open rather than a second reader. After that the process has
+  forgotten the grant and refuses it as unknown.
 - A grant for one checkout's Workbench is unknown to every other one.
 - The grant is never written to a result, a record, a log, a diagnostic or
   feedback.
@@ -90,14 +91,18 @@ grants and tokens. No token or grant is shared between them, and none is
 global. If a later process is given a port that an earlier one used, a
 leftover tab presents a token that process never issued and is refused.
 
-**Discovery and stopping.** The background process writes one private record,
-`.sannr/evidence/workbench/launch/service.json` (mode 0600), with its instance
-ID, the checkout's real path, its process ID, its endpoint, the plain address
-and its start time. A command trusts that record only after the process behind
-the endpoint answers with the same instance and the same path. A record that
-nothing answers for is deleted, and only the record: no process is signalled
-by its ID, and no path named inside a record is removed. `workbench stop` asks
-the process to close over the endpoint.
+**Discovery and stopping.** The background process writes a private launch
+record, `.sannr/evidence/workbench/launch/service.json` (mode 0600), with its
+instance ID, the checkout's real path, its process ID, its endpoint, the plain
+address and its start time. Like a terminal launch it also keeps the small
+heartbeat record under `.sannr/evidence/workbench/control/` that lets `show`
+find it. Neither holds a grant or a token. A command trusts the launch record
+only after the process behind the endpoint answers with the same instance and
+the same path. A record that nothing answers for is deleted, and only the
+record: no process is ever stopped or interrupted by a recorded ID, and no
+path named inside a record is removed. The one use of a recorded process ID is
+to ask the system whether the opener that left a launch lock still exists.
+`workbench stop` asks the process to close over the endpoint.
 
 The terminal launch is not part of this path. Its process has no
 `/launch/redeem` route, its endpoint accepts only `show`, and `open` never
