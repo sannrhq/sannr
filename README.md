@@ -64,7 +64,9 @@ to expect. In short, from the root of a git repository:
 5. `npx @sannr/sannr workbench` in an interactive terminal opens the local
    Workbench. Pair the browser with the code the terminal asks for, then read
    the `github` stack's note and its trace on the Workbench view, or switch to
-   the Map view to see which code defines which operation.
+   the Map view to see which code defines which operation. The Activity view
+   lists the requests recorded on this machine, and the Request view sends one
+   by hand.
 6. Commit `.sannr/`. The next session, on any machine, starts with that note.
 
 Setup details, host notes, repair and removal are in [install](docs/install.md).

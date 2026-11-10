@@ -170,8 +170,10 @@ verified": the stack has no contract). The middle column also offers **Add
 notes** for a response of your own and a **Verify** prompt to paste into your
 coding agent. The **Map** switch in the header draws which code defines which
 operation once a survey exists; until then it says there is no survey yet and
-names the `survey generate` command for your install. Opening
-either view sends no API request. Keep the terminal open while you use it;
+names the `survey generate` command for your install. **Activity** lists the
+requests recorded on this machine, and **Request** sends one by hand when you
+choose **Send request**. Opening a view sends no API request. Keep the terminal
+open while you use it;
 Ctrl-C closes it. The [workbench guide](workbench.md) covers the rest.
 
 ## 7. Commit `.sannr/`

@@ -3,9 +3,11 @@
 The workbench shows what this repository's `.sannr/` stacks already hold: each
 note an agent or a person recorded about an API operation, the evidence it rests
 on, and the source survey of which code defines which operation. It reads the
-stack files, ledgers, contracts, `graph/survey.json` and run-file metadata; it
-never sends an API request. The terminal launches and owns the page. A coding
-agent is optional.
+stack files, ledgers, contracts, `graph/survey.json` and run-file metadata. It
+also lists the requests recorded on this machine and lets you send one
+yourself. Opening or reading the page never sends an API request; one goes out
+only when you choose **Send request** in the Request view. The terminal
+launches and owns the page. A coding agent is optional.
 
 ## Open and pair
 
@@ -50,8 +52,8 @@ unreachable terminal needs to be relaunched.
 ## What the page shows
 
 The header reads **Sannr Workbench** or **Sannr Map**, then the API name, then a
-**Workbench | Map** switch and a round settings button. There are no other
-screens.
+**Workbench | Activity | Request | Map** switch and a round settings button.
+The page opens on the Workbench view.
 
 ### Workbench view
 
@@ -100,6 +102,75 @@ Responses are saved on this machine in the private, ignored
 They never change `sannr.json`. A response that looks like it holds a credential
 is refused and nothing is saved. Until ledger write-back exists, the **Send
 responses** prompt is the way a response reaches the ledger.
+
+### Activity view
+
+Three columns, resized like the Workbench view's.
+
+- **Left: recorded requests.** Every request this machine's ledger retains,
+  newest first, grouped by caller and time: requests sent through Sannr by a
+  coding agent (the `api_request` tool), the command line or this page. A
+  caption gives the ledger's totals. Filters: **All**, **Failed** (an HTTP
+  status of 400 or more, a failed check, a refusal or an error), **Coding
+  agent**, **Command line** and **Workbench**. The caller is the recorded
+  initiator; the command line is not assumed to be a person, because an agent's
+  shell uses it too. A green square means a response was recorded, red a
+  failure, hollow no response. The list shows at most 100 requests in 20 groups
+  and says when older ones are not listed. A fresh clone starts empty, because
+  run evidence is not committed.
+- **Middle: one request.** Its operation, caller, time and stack, and a status
+  line with the HTTP status and whether any check ran. A recorded response is
+  not a passed test, and the line says so. **Show response** reads the retained
+  response for that run once: the body with credentials masked, and its
+  displayable headers. Listing and selecting never read a body. **Open in
+  Request** reopens the request as a draft in the Request view; **Open its
+  notes** opens the operation on the Workbench view.
+- **Right: details.** What the ledger recorded: the caller, the request, the
+  response and its receipt state, the checks, the notes delivered with the
+  call, and what it produced (a shared observation, knowledge drafts, drift
+  records, notes written).
+
+Activity describes requests made through Sannr. It cannot see a call made with
+curl or an SDK.
+
+### Request view
+
+Send a request by hand, change a value and send it again, then save it for
+reuse. Three columns, resized like the Workbench view's.
+
+- **Left: what you can send.** Stack chips, the stack's environments
+  (production ones are marked), the saved requests for the stack, and its
+  operations with the same squares as Activity. **Another endpoint** takes a
+  method and a path; with a contract bound, the path must be one the contract
+  declares.
+- **Middle: the request.** Choosing an operation builds a draft from the
+  current contract: its structure and required fields, never examples, defaults
+  or credential values. Building a draft sends nothing. Each field shows where
+  it goes (path, query, header or body) and its type. A string is sent as
+  typed; any other type is entered as JSON. A field the draft marks sensitive
+  is masked until you choose **Show**. **Send request**, or Enter in a field,
+  sends the request once through the same client, credentials and production
+  policy as the CLI and the MCP tool. A missing value is named and nothing is
+  sent. Entered values stay in the tab, so you can adjust one and send again;
+  they are dropped when you choose another operation and are never written to
+  a file. A production environment shows a warning line above the fields.
+- **Advanced request structure** shows the draft's bindings as JSON. Add an
+  optional header, query parameter or body field by binding it to an input,
+  `{"$input":"name"}`, then choose **Update the fields**. **Save for reuse**
+  writes the structure to `.sannr/requests/<folder>/<name>.json` (see
+  [saved requests](saved-requests.md)). A saved request can be changed, renamed
+  or moved, and deleted after a second confirmation; its execution history
+  stays.
+- **Right: the response.** The HTTP status, whether any check ran, the
+  round-trip time from the page, and the recorded response: the body with
+  credentials masked and the displayable headers, read once from this machine's
+  private evidence after the send. Below it, the run identifier and where it
+  was recorded. A request reopened from Activity shows its earlier result and
+  says nothing was sent again; its body is read when you choose **Show recorded
+  response**.
+
+The Request view treats an empty field as missing, so it cannot send an empty
+string as a value.
 
 ### Map view
 
@@ -170,15 +241,15 @@ network.
 ## Where the earlier screens went
 
 The Activity, API map, APIs, Request, Agent handoff, Review and Settings screens
-were replaced by the two views above. Their functions remain available headlessly:
+were replaced by the views above. Their functions also remain available headlessly:
 
 | Earlier screen | Where it is now |
 | --- | --- |
 | Review decisions (trust, dispute, retire, ask for a run, batches) | `sannr review` and the `api_note_review` MCP tool; existing review records show in the trace |
-| Activity and the agent session view | `sannr sessions` and the session summary an agent quotes |
+| Activity and the agent session view | The Activity view lists recorded requests; a whole agent session reads with `sannr sessions` and the session summary an agent quotes |
 | API map | The Map view, drawn from the same retained survey |
 | APIs and operation detail | `sannr show '<METHOD /path>'`, notes on the Workbench view |
-| Request runner and saved requests | `sannr saved` and the `api_saved_requests` MCP tool |
+| Request runner and saved requests | The Request view; also `sannr saved` and the `api_saved_requests` MCP tool |
 | Agent handoff and presence | The repository inbox through the `api_workbench` MCP tool (below) |
 | Settings (Slate, Paper and Ink themes) | Removed; the settings popover offers Light, Dark or System |
 

@@ -114,6 +114,10 @@ see [SUPPORT.md](../SUPPORT.md).
   closes it.
 - No secret store. Credentials come from the stack's environment source; the
   page shows reference names and readiness, never values.
+- The Request view sends HTTP requests with JSON or form bodies, one at a
+  time, without assertions. It treats an empty field as missing, so it cannot
+  send an empty string as a value. Activity lists only requests made through
+  Sannr on this machine.
 - Native installers, import editing, suite and batch launch controls, surveys
   and in-flight recording are not in this release.
 

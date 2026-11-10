@@ -60,22 +60,34 @@ Errors are `{ok:false,error:{code,next_action}}` with a fixed code and safe
 repair text. Unexpected failures return a fixed error without their message or
 stack.
 
-### Writes to shared knowledge
+### Writes to shared files
 
-Of the actions the page calls, exactly one writes the stack's knowledge file:
-saving a note you typed. It goes through the same writer as
+Three things you do on the page can change files you commit.
+
+**Saving a note you typed** writes the stack's knowledge file. It goes through the same writer as
 `sannr note --actor person`, with the same author marker, date, history,
 conflict and credential refusals, and the same managed pointer refresh. It
 never edits, supersedes, retires or reviews a note, takes no evidence and sends
 no request. The operation must be one the survey, the contract or the stack's
-knowledge already names, and a refusal leaves the file unchanged. The page's
-other actions write only the private, gitignored Workbench files under the
-evidence folder, or nothing.
+knowledge already names, and a refusal leaves the file unchanged.
+
+**Send request**, in the Request view, runs one request through the same client
+as the CLI and MCP server. Like any request through that client it writes
+private run evidence, and when the operation is bound to a contract it may
+record a structural observation (field names and types, never values) in the
+stack's knowledge file. Nothing is sent by opening a view, building a draft or
+reading Activity.
+
+**Saving, renaming or deleting a saved request** writes or removes one file
+under `.sannr/requests/`: structure, typed input declarations and credential
+references only. Values you entered are never written.
+
+The page's other actions write only the private, gitignored Workbench files
+under the evidence folder, or nothing.
 
 The same token can also reach actions the page does not call: the review
-actions (record a review, supersession or retirement), saved-request
-management (create, edit, rename, delete and run portable saved requests) and
-the handoff inbox. Treat a paired token as able to do all of these.
+actions (record a review, supersession or retirement) and the handoff inbox.
+Treat a paired token as able to do all of these.
 
 ### Responses and private evidence
 

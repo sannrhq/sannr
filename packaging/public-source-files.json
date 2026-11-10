@@ -629,6 +629,7 @@
     "test/workbench-journey.test.mjs",
     "test/workbench-map.test.mjs",
     "test/workbench-model.test.mjs",
+    "test/workbench-operator-views.test.mjs",
     "test/workbench-review.test.mjs",
     "test/workbench-server.test.mjs",
     "test/workbench-session.test.mjs",

@@ -10,6 +10,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
 
 ## [Unreleased]
 
+- The Workbench page gains two views beside Workbench and Map. **Activity**
+  lists the requests this machine's ledger retains, newest first, with the
+  caller, status and checks, a Failed filter, and the recorded response read
+  only on **Show response**. **Request** sends a request by hand: fields built
+  from the current contract, one explicit send through the same client and
+  policy as the CLI and the MCP tool, the masked response beside it, an
+  advanced structure editor, and save, rename and delete for saved requests.
+  Entered values stay in the tab and are never saved. The page still opens on
+  the Workbench view, and opening a view sends no request. See
+  `docs/workbench.md` and `docs/workbench-security.md`.
 - `view --open` on Windows hands the written page to PowerShell's `Start-Process`,
   the opener the Workbench already used (now shared in `lib/os-open.mjs`), instead
   of explorer.exe, which exits 1 after a successful open and so made every
