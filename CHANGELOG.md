@@ -10,6 +10,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
 
 ## [Unreleased]
 
+- `workbench open` opens a repository's Workbench in one step, with no
+  interactive terminal and no pairing code, so a coding agent can do it when
+  asked to "open the workbench". It starts a background Workbench for the
+  checkout, or reuses the one already running, and opens a connected page in
+  the default browser. Each checkout has its own, several can run at once, and
+  `--project <path>` names another local checkout. `workbench status` and
+  `workbench stop` report on and close one checkout's Workbench; it also stops
+  30 minutes after its last page request and after eight hours. The
+  `api_workbench` MCP tool gains `open` and `stop` for the repository its
+  server is bound to, and refuses another checkout by name
+  (`WORKBENCH_REPOSITORY_MISMATCH`) instead of opening it. Results name the
+  repository, whether the instance was created or reused, the plain local URL,
+  and the browser outcome, with an accepted opener request kept apart from a
+  page that actually connected. The installed skill now tells an agent how to
+  choose the repository from the conversation and to open it itself.
+- Security model of that path, which differs from the terminal launch: the
+  page connects with a one-use, two-minute launch grant passed in the URL
+  fragment and removed from the address bar at once; the tab keeps its session
+  token in `sessionStorage`, so a reload stays connected; several tabs can be
+  connected together; and any process running as you in the checkout can ask
+  for a launch, where the terminal launch needs a code typed by a person. The
+  plain URL still grants nothing. The control endpoint of a running Workbench
+  now sits in a directory only its owner can enter. `sannr workbench` with no
+  subcommand keeps its typed pairing code and is unchanged, except that its
+  refusal without a terminal now names `workbench open`. See
+  `docs/workbench-security.md`.
 - The Workbench page gains two views beside Workbench and Map. **Activity**
   lists the requests this machine's ledger retains, newest first, with the
   caller, status and checks, a Failed filter, and the recorded response read

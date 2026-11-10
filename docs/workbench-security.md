@@ -5,14 +5,20 @@ This page describes what that page can reach, how a browser tab earns access,
 what is stored, and the limits of the boundary. For launching and using the
 Workbench, see [the Workbench guide](workbench.md).
 
-## Launch and pairing
+A tab earns access in one of two ways, depending on how the Workbench was
+started: a code typed into the launching terminal, or a one-use launch from
+`sannr workbench open`. Each Workbench process offers exactly one of them.
+Either way the listener is IPv4 `127.0.0.1` at a port the operating system
+assigns, and the address you see or are given carries no secret. Until a tab
+has earned access, the page holds only package-owned HTML, CSS and JavaScript;
+it cannot read project names, history, saved requests, credentials or private
+evidence. The server has no generic filesystem, command, proxy or outbound
+HTTP routes.
 
-`sannr workbench` runs in an interactive terminal and listens on IPv4
-`127.0.0.1` at a port the operating system assigns. The printed launch URL
-carries no secret, query or fragment. Before pairing, the page holds only
-package-owned HTML, CSS and JavaScript; it cannot read project names, history,
-saved requests, credentials or private evidence. The server has no generic
-filesystem, command, proxy or outbound HTTP routes.
+## Terminal launch and pairing
+
+`sannr workbench` runs in an interactive terminal. The printed launch URL
+carries no secret, query or fragment.
 
 To pair, the page shows a short random code and you type that code into the
 terminal that launched the Workbench. No HTTP endpoint approves a pairing, so
@@ -32,10 +38,75 @@ requires pairing again. Pairing codes and tokens are never taken from command
 arguments or environment variables, and a code typed at the running prompt
 does not enter shell history.
 
-## What a paired page can do
+## One-step open
+
+`sannr workbench open`, and the `api_workbench` tool's `open`, start one
+background process per checkout and open a connected page without a typed
+code. This path makes different promises from the terminal launch, and they
+are listed here in full.
+
+**Who can start a connection.** The background process listens on a private
+local endpoint: on macOS and Linux a Unix socket inside a directory that only
+your account can enter, on Windows a named pipe with the system's default
+access control. A process that can reach that endpoint can ask for a launch.
+In practice that is any process running as you, which includes your coding
+agent. So an open proves that a process running as you asked, in that
+checkout. It does not prove that a person approved, as a typed code does.
+What such a process gains is a page that can do what the CLI in that checkout
+already lets it do, through the same client, credentials and policy.
+
+**How the tab connects.** For each open, the background process mints a launch
+grant: 256 random bits, valid for two minutes and for one use, known only to
+that process. The command hands your browser the local address with the grant
+in the URL fragment. A fragment is not sent in an HTTP request or a referrer.
+The page takes the fragment out of the address bar before it does anything
+else, then exchanges the grant once, at `POST /launch/redeem`, for a session
+token of its own. That exchange passes the same origin, host, fetch-metadata
+and JSON checks as every other private route.
+
+- The plain address, which results and status print, gives only the public
+  page. A tab opened on it stays on a not-connected screen.
+- A grant that was used cannot be used again. Presenting it a second time is
+  refused and also ends the session its first use created, so a copy that
+  raced the browser turns into a visible failed open rather than a second
+  reader.
+- A grant for one checkout's Workbench is unknown to every other one.
+- The grant is never written to a result, a record, a log, a diagnostic or
+  feedback.
+
+**What the tab keeps.** The tab stores its session token in `sessionStorage`,
+which the browser scopes to that tab and to that exact origin, port included.
+That is what lets a reload stay connected. The token is not in a cookie, the
+URL or `localStorage`, so another tab, another port and another site cannot
+read it; duplicating the tab copies it, as the browser copies all of that
+tab's session data. The browser may keep session data on disk to restore tabs,
+so the token can be at rest in your browser profile while that Workbench
+process lives. It is worthless once the process ends.
+
+**Several tabs, several repositories.** A background Workbench accepts up to
+64 page sessions at once, and a new one does not end the others; beyond 64 the
+session unused for longest gives way. Each checkout has its own process, port,
+grants and tokens. No token or grant is shared between them, and none is
+global. If a later process is given a port that an earlier one used, a
+leftover tab presents a token that process never issued and is refused.
+
+**Discovery and stopping.** The background process writes one private record,
+`.sannr/evidence/workbench/launch/service.json` (mode 0600), with its instance
+ID, the checkout's real path, its process ID, its endpoint, the plain address
+and its start time. A command trusts that record only after the process behind
+the endpoint answers with the same instance and the same path. A record that
+nothing answers for is deleted, and only the record: no process is signalled
+by its ID, and no path named inside a record is removed. `workbench stop` asks
+the process to close over the endpoint.
+
+The terminal launch is not part of this path. Its process has no
+`/launch/redeem` route, its endpoint accepts only `show`, and `open` never
+reuses it.
+
+## What a connected page can do
 
 Every private read and action is a `POST /action` with the JSON envelope
-`{"action":"<name>","params":{}}`, the current `X-Workbench-Token`, `Host` and
+`{"action":"<name>","params":{}}`, the tab's `X-Workbench-Token`, `Host` and
 `Origin` equal to the listener's own `127.0.0.1:<port>`, same-origin fetch
 metadata (`Sec-Fetch-Site: same-origin`, `Sec-Fetch-Mode: cors`,
 `Sec-Fetch-Dest: empty`) and JSON `Accept` and `Content-Type` headers. Modern
@@ -49,7 +120,9 @@ envelope keys, duplicate or prototype JSON keys, non-finite numbers and
 malformed UTF-8 are refused before any action runs. Action names are an exact
 allowlist.
 
-Only `/`, `/workbench.js` and `/workbench.css` are served, from package-local
+Besides `/action` and the one route by which a tab earns access (`/pair/start`
+and `/pair/complete`, or `/launch/redeem`), only `/`, `/workbench.js` and
+`/workbench.css` are served, from package-local
 bytes with fixed content types; no request path is ever resolved into a file
 path. A strict Content Security Policy allows only same-origin scripts,
 styles, connections and images (bundled fonts are embedded), blocks inline and
@@ -95,7 +168,7 @@ under the evidence folder, or nothing.
 
 The same token can also reach actions the page does not call: batch review,
 supersession of one note by another, and the handoff inbox.
-Treat a paired token as able to do all of these.
+Treat a session token as able to do all of these.
 
 ### Responses and private evidence
 
@@ -146,35 +219,61 @@ Requests are limited to 64 KiB of JSON and 8 KiB of headers, responses to
 concurrent actions and a five-second body-read deadline. An oversized response
 becomes an error, never a partial success.
 
-The process closes after 15 minutes without pairing or an explicit action, and
-after eight hours in any case. Background refreshes and refused traffic do not
-extend that time. It also closes when the terminal ends, on interrupt or on
-exit. Closing clears pending pairings and the active token, closes connections
-and aborts running actions. A new process creates new authority even if the
-port is reused.
+A terminal-launched process closes after 15 minutes without pairing or an
+explicit action, and after eight hours in any case. Background refreshes and
+refused traffic do not extend that time. It also closes when the terminal
+ends, on interrupt or on exit.
+
+A background process started by `workbench open` closes on `workbench stop`,
+30 minutes after the last request that carried a valid session token, and
+after eight hours in any case. An open page checks in once a minute, so a
+connected tab keeps its access for as long as it stays open and awake, up to
+the eight hours; the 15-minute rule above does not apply to it. Requests
+without a valid token do not extend the time.
+
+Closing either kind clears pending pairings or launches and every session
+token, closes connections and aborts running actions. A new process creates
+new authority even if the port is reused.
 
 An action accepted just before a disconnect may already have done its work;
 aborting is not a rollback. The page shows an unknown-outcome state rather than
 sending again, and the run history tells you what happened.
 
-The server does not log URLs, bodies, request headers, tokens, pairing values,
-exception messages or responses, and sets `Referrer-Policy: no-referrer` and
-`Cache-Control: no-store`. The page keeps the nonce and token in memory only,
-never in URLs, cookies, browser storage, console output, reports or feedback;
-only the theme choice is stored locally.
+The server does not log URLs, bodies, request headers, tokens, pairing or
+launch values, exception messages or responses, and sets
+`Referrer-Policy: no-referrer` and `Cache-Control: no-store`. A terminal-paired
+page keeps the nonce and token in memory only. A page opened by
+`workbench open` keeps its token in the tab's `sessionStorage`, as described
+above, and removes the launch grant from the URL at once. Neither puts
+authority in cookies, console output, reports or feedback; the theme choice is
+the only other thing stored in the browser.
 
 ## What this does not protect against
 
 Browser developer tools, and anyone who controls your local user account or
-browser, can read the page's memory and requests. A malicious local process
-running as you is outside this boundary. The Workbench is for one person at
-one machine; it does not support remote access.
+browser, can read the page's memory, its session storage and its requests. A
+malicious local process running as you is outside this boundary; on the
+one-step path it can also ask for a launch itself. The Workbench is for one
+person at one machine; it does not support remote access.
+
+On macOS and Linux the system opener receives the launch address as a command
+argument. While the opener runs, another account on the same machine that can
+list your processes can see it. The grant in it works once, for two minutes,
+and a second use ends the first one's session, but on a machine you share with
+accounts you do not trust, prefer the terminal launch. The browser itself may
+also record the address it was opened with, in history or sync, before the
+page clears it; that copy cannot be used again.
 
 ## Check it yourself
 
 In a source checkout, `node --test test/workbench-server.test.mjs` runs the
 boundary's tests against loopback fixtures only. They cover leaked URLs, codes
-and nonces, unapproved and expired pairings, cross-origin and rebinding
+and nonces, unapproved and expired pairings, launch grants that are unused,
+expired, replayed or sent from another origin, cross-origin and rebinding
 requests, duplicate headers, unsupported methods and routes, malformed JSON,
 stale tokens, expiry, size bounds, hostile markup delivered unchanged as JSON and the
-fixed error responses. They exercise the Node server, not a real browser.
+fixed error responses. `node --test test/workbench-open.test.mjs` runs the
+one-step path end to end with the real CLI and MCP server: two repositories
+side by side, simultaneous opens, a killed process, a reused port and a
+damaged record. Both exercise the Node processes with a stand-in for the
+browser, not a real browser.

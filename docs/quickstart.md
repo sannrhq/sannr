@@ -155,7 +155,9 @@ npx @sannr/sannr workbench
 ```
 
 This needs an interactive terminal: it refuses with
-`WORKBENCH_TERMINAL_REQUIRED` under a pipe or an agent's shell. It prints
+`WORKBENCH_TERMINAL_REQUIRED` under a pipe or an agent's shell, where
+`workbench open` opens the same page with no code to type (see the
+[workbench guide](workbench.md#open-in-one-step)). It prints
 `Local workbench: http://127.0.0.1:<port>/` and opens your browser (`--no-open`
 prints the URL only). The page shows a pairing code such as `3277-0F66-7C6D`;
 the terminal then says "Browser requested pairing" and shows a

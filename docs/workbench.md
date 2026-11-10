@@ -6,25 +6,127 @@ on, and the source survey of which code defines which operation. It reads the
 stack files, ledgers, contracts, `graph/survey.json` and run-file metadata. It
 also lists the requests recorded on this machine and lets you send one
 yourself. Opening or reading the page never sends an API request; one goes out
-only when you choose **Send request** in the Request view. The terminal
-launches and owns the page. A coding agent is optional.
+only when you choose **Send request** in the Request view. A coding agent is
+optional.
 
-## Open and pair
+There are two ways to open it, and both show the same page: ask for it in one
+step (`workbench open`, or your coding agent), or launch it in an interactive
+terminal and pair the browser with a typed code. The examples on this page
+write `sannr`; with an npx install that is `npx @sannr/sannr`, and with a
+repository-local install `./node_modules/.bin/sannr`.
 
-From the repository root, run the CLI in an interactive terminal. The examples
-on this page write `sannr`; with an npx install that is `npx @sannr/sannr`,
-and with a repository-local install `./node_modules/.bin/sannr`:
+## Open in one step
+
+Say **“open the workbench”** to a coding agent that has Sannr set up, or run:
+
+```sh
+npx @sannr/sannr workbench open
+```
+
+This starts the repository's workbench as a background process on this machine,
+or reuses the one that is already running, and asks the system opener for a
+connected page in your default browser. It needs no interactive terminal and no
+pairing code, so it also works from an agent's shell or a script, and through
+the `api_workbench` MCP tool as `{"action":"open"}`. Opening sends no API
+request and writes nothing to the stack files.
+
+**Which repository.** `open` acts on the checkout it is run in: the Git top
+level of the current directory, else the directory itself. `--project <path>`
+names another local checkout instead. A coding agent chooses the checkout from
+what you asked: a repository you named, else the one the conversation is about,
+else the current directory, and it asks when two are equally likely. The
+`api_workbench` tool opens only the repository its MCP server is bound to. Given
+a `project` that is a different checkout it refuses with
+`WORKBENCH_REPOSITORY_MISMATCH` and opens nothing; the agent then runs
+`workbench open --project <path>` for that checkout. Nothing rebinds the server.
+
+**Several at once.** Each checkout has its own background workbench on its own
+port. Two checkouts with the same folder name, and linked worktrees of one
+repository, are separate. Opening a second repository leaves the first one
+running, and each page shows only its own repository.
+
+**Opening again.** A second `open` for the same checkout reuses its running
+workbench and opens another tab. Tabs that are already open stay connected,
+with their drafts, filters and selection as they were.
+
+**What the result says.** With `--json`, and from the MCP tool, the result is
+one object:
+
+- `repository`: the folder name and the full path of the checkout that opened.
+- `instance.state`: `created` or `reused`, with its ID and when it started and
+  will stop by itself.
+- `url`: the plain local address, such as `http://127.0.0.1:53148/`. It
+  carries no access; see below.
+- `browser.state`: `dispatched` (the system opener accepted the request),
+  `failed`, `unavailable` or `not-requested`.
+- `page.state`: `connected` when the opened page reached the workbench within
+  about four seconds, else `not-observed`. An accepted opener request does not
+  show that a page rendered, and the result never says it does.
+- `stop`: the command that stops this checkout's workbench.
+
+Without `--json` the same facts print as a few lines.
+
+**Options.** `--view workbench|activity|request|map` opens on that view.
+`--operation "<METHOD /path>"`, with `--stack <name>` when the repository has
+named stacks, opens that operation on the Workbench view. A value that cannot
+be used is ignored and named under `context.ignored`; it never changes which
+repository opens. `--no-open` starts or reuses the workbench without opening a
+browser.
+
+**Reload and new tabs.** Reloading a connected tab keeps it connected. A new
+tab opened on the plain URL is not connected: it shows a screen that says to
+ask your agent or run `workbench open`. Only a launch connects a tab.
+
+**Stopping.** `sannr workbench stop` stops this checkout's workbench and no
+other (`--project <path>` for another checkout). `sannr workbench status` says
+whether one is running, its URL and how many pages are connected. Left alone,
+a background workbench stops 30 minutes after the last request from a page (an
+open page checks in once a minute) and after eight hours in any case. Closing a
+tab stops nothing by itself. After it stops, tabs that were open show the
+not-connected screen; `open` starts it again, on a new port, in a new tab.
+
+**When it cannot open.** Each of these is a named result, and none falls back
+to another repository:
+
+| Code | Meaning | What to do |
+| --- | --- | --- |
+| `WORKBENCH_PROJECT_NOT_FOUND` | The path names no directory. | Name an existing local checkout. |
+| `WORKBENCH_PROJECT_NOT_CONFIGURED` | The checkout has no Sannr files. Nothing was created there. | Run `sannr connect` in it first. |
+| `WORKBENCH_OPENER_UNAVAILABLE`, `WORKBENCH_OPENER_FAILED` | The system opener is missing or reported a failure. The workbench is running. | Run `workbench open` again where your browser is, or use the terminal launch below. |
+| `WORKBENCH_BROWSER_UNAVAILABLE` | A Linux session with no display. The workbench is running. | Open it from a desktop session on that machine. |
+| `WORKBENCH_SERVICE_UNRESPONSIVE` | The background process did not answer. Nothing was stopped. | Retry; if it persists, check the named process yourself. |
+| `WORKBENCH_LAUNCH_BUSY`, `WORKBENCH_SERVICE_START_FAILED`, `WORKBENCH_SERVICE_START_TIMEOUT` | Another open is still starting, or the process did not start. | Open again. |
+
+Less common codes (`WORKBENCH_LAUNCH_GRANT_FAILED`, `WORKBENCH_LAUNCH_UNSAFE`,
+`WORKBENCH_STOP_FAILED`) carry their own next step in the result.
+
+The browser opens on the machine that runs the command. In a shell reached over
+SSH the result also carries `browser.remote_session: true`. Opening a browser on
+a different machine than the workbench, through a tunnel or otherwise, is not
+supported.
+
+The background workbench keeps the environment of the command that first
+started it. A stack that reads a credential from an environment variable finds
+it there or not at all; if a send reports a missing credential, stop the
+workbench and open it from a shell that has the variable.
+
+## Launch in a terminal and pair
+
+From the repository root, run the CLI in an interactive terminal:
 
 ```sh
 npx @sannr/sannr workbench
 ```
+
+This is a separate workbench that the terminal owns. `workbench open` does not
+reuse it, and the two can run side by side.
 
 The command opens the default browser: with `open` on macOS, `xdg-open` on
 Linux, and on Windows with PowerShell's `Start-Process`, which receives the URL
 through an environment variable rather than as command text. If the opener
 cannot start, the terminal asks you to open the printed URL. Use `--no-open` to
 open the printed local URL yourself. Without an interactive terminal (a pipe, an agent's shell)
-it refuses with `WORKBENCH_TERMINAL_REQUIRED`. The listener is IPv4 loopback only, on an
+it refuses with `WORKBENCH_TERMINAL_REQUIRED` and names `workbench open`. The listener is IPv4 loopback only, on an
 ephemeral port. The URL contains no authority and may be printed normally.
 Each launch creates an operator session ID for its handoff journal. To continue
 an earlier inbox in the same repository, pass `--session wb-SESSION_ID` using an
@@ -282,9 +384,9 @@ were replaced by the views above. Their functions also remain available headless
 | Agent handoff and presence | The repository inbox through the `api_workbench` MCP tool (below) |
 | Settings (Slate, Paper and Ink themes) | Removed; the settings popover offers Light, Dark or System |
 
-`--show last-session` and `--show <session id>` are still accepted by
-`sannr workbench`; the page has no session view, so read the session with
-`sannr sessions`.
+`--show last-session` and `--show <session id>` are still accepted by the
+terminal launch, `sannr workbench`; the page has no session view, so read the
+session with `sannr sessions`.
 
 ## Headless: the repository inbox
 
@@ -358,10 +460,13 @@ future execution, change environments or create credentials.
 
 Everything the page saves stays under the private, gitignored
 `.sannr/evidence/workbench/` directory: appearance and column widths, and your
-responses. None of it changes API bindings, shared knowledge or credentials;
+responses. A background workbench also keeps its discovery record and a short
+launch lock in `.sannr/evidence/workbench/launch/`; they hold no access to the
+page and are removed when it stops. None of it changes API bindings, shared knowledge or credentials;
 the one ledger write is a note you save by hand.
 The workbench uses package-local assets and no account or automatic telemetry.
 Explicit feedback continues to follow the existing
 [feedback-send policy](feedback.md). See
-[Workbench security](workbench-security.md) for pairing, what a paired page can
-reach, and the limits of the local boundary.
+[Workbench security](workbench-security.md) for how a page earns access on
+each path, what a connected page can reach, and the limits of the local
+boundary.
