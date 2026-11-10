@@ -83,7 +83,10 @@ whether one is running, its URL and how many pages are connected. Left alone,
 a background workbench stops 30 minutes after the last request from a page (an
 open page checks in once a minute) and after eight hours in any case. Closing a
 tab stops nothing by itself. After it stops, tabs that were open show the
-not-connected screen; `open` starts it again, on a new port, in a new tab.
+not-connected screen; `open` starts it again, on a new port, in a new tab. In
+a process list the background workbench is the CLI running
+`workbench serve --project <path>`; `open` starts that, and it is not meant to
+be run by hand.
 
 **When it cannot open.** Each of these is a named result, and none falls back
 to another repository:
