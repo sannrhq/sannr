@@ -36,6 +36,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   subcommand keeps its typed pairing code and is unchanged, except that its
   refusal without a terminal now names `workbench open`. See
   `docs/workbench-security.md`.
+- A session summary's `open` line now names `workbench open`, which needs no
+  pairing code, in place of the terminal launch.
 - The Workbench page gains two views beside Workbench and Map. **Activity**
   lists the requests this machine's ledger retains, newest first, with the
   caller, status and checks, a Failed filter, and the recorded response read
