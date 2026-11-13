@@ -613,6 +613,7 @@
     "test/survey-render.test.mjs",
     "test/survey-surfaces.test.mjs",
     "test/survey.test.mjs",
+    "test/telemetry.test.mjs",
     "test/truthful.mjs",
     "test/unit-runner.test.mjs",
     "test/unwire-release.test.mjs",
