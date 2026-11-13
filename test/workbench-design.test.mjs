@@ -1,6 +1,7 @@
 // The Workbench page as a user observes it: the packaged script runs against
 // the real engine handlers over a synthetic lab repository (no network, no
 // real home directory). One test per acceptance scenario in the DESIGN-1 brief.
+import './helpers/isolated-home.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';

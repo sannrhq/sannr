@@ -2,6 +2,7 @@
 // launch, and the agent's show action. The message carries a ledger session
 // id and nothing else; a forged id is refused by name; an absent Workbench is
 // a result, never a failed agent turn; the browser is never navigated here.
+import './helpers/isolated-home.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { connect } from 'node:net';

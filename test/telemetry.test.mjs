@@ -6,6 +6,7 @@
 // wire, so nothing reaches a real host. The same preload pins every process's
 // clock to a fixed midday that only the test moves (m.advance), so no test
 // depends on the time of day or on file times.
+import './helpers/isolated-home.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -60,11 +61,11 @@ function validate(schema, value, path = '$') {
 }
 
 // --- one isolated machine --------------------------------------------------------
-function machine(t, { project = 'project' } = {}) {
+function machine(t, { project = 'project', stateInHome = false } = {}) {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-')));
   t.after(() => { for (const dir of ['state', 'other-state', 'home']) try { chmodSync(join(parent, dir), 0o700); } catch { /* absent */ }
     rmSync(parent, { recursive: true, force: true }); });
-  const home = join(parent, 'home'), state = join(parent, 'state'), root = join(parent, project);
+  const home = join(parent, 'home'), state = stateInHome ? join(parent, 'home', `.${PRODUCT}`) : join(parent, 'state'), root = join(parent, project);
   mkdirSync(home); mkdirSync(root);
   const calls = join(parent, 'calls.jsonl'), mode = join(parent, 'mode.txt'), clock = join(parent, 'clock.txt'), preload = join(parent, 'preload.mjs');
   writeFileSync(mode, 'accept');
@@ -76,6 +77,10 @@ globalThis.Date = class extends RealDate {
   constructor(...args) { if (args.length) super(...args); else super(RealDate.now() + offset()); }
   static now() { return RealDate.now() + offset(); }
 };
+if ((process.argv[1] ?? '').endsWith('telemetry-send.mjs')) {
+  let ms = 0; try { ms = Number(readFileSync(${JSON.stringify(join(parent, 'stall.txt'))}, 'utf8')); } catch {}
+  if (ms > 0) await new Promise(resolve => setTimeout(resolve, ms));
+}
 const actual = globalThis.fetch;
 globalThis.fetch = async (url, init = {}) => {
   const href = String(url instanceof Request ? url.url : url);
@@ -100,6 +105,7 @@ globalThis.fetch = async (url, init = {}) => {
     stateFile: join(state, 'telemetry.json'), lock: join(state, 'telemetry', '.send.lock'), sent: join(state, 'telemetry', 'sent'),
     counts: join(state, 'telemetry', 'counts.jsonl'),
     setMode: value => writeFileSync(mode, value),
+    stallSender: ms => writeFileSync(join(parent, 'stall.txt'), String(ms)),
     advance: hours => writeFileSync(clock, String(Number(readFileSync(clock, 'utf8')) + hours * 3_600_000)),
     calls: () => existsSync(calls) ? readFileSync(calls, 'utf8').split('\n').filter(Boolean).map(line => {
       const row = JSON.parse(line); return { ...row, body: row.body === null ? null : Buffer.from(row.body, 'base64').toString('utf8') };
@@ -289,6 +295,8 @@ test('USE-1-04: off sends nothing, deletes the identifier and counts, and holds 
   }
   await m.settle();
   assert.equal(m.calls().length, before, 'a request was made while off');
+  assert.equal(existsSync(m.counts), false, 'a command was counted while off');
+  assert.equal(existsSync(m.sent), false, 'a document was prepared while off');
   assert.equal(json(await m.run(['telemetry', 'status', '--json'])).state, 'off');
 
   assert.equal(json(await m.run(['telemetry', 'on', '--json'])).state, 'on');
@@ -315,7 +323,7 @@ test('A5a: off racing a send in progress is never undone, and nothing is sent af
     await due;
     assert.equal(json(off).state, 'off');
     await m.settle();
-    assert.equal(m.readState().state, 'off', `run ${i}: off was written back to on`);
+    assert.equal(json(await m.run(['telemetry', 'status', '--json'])).state, 'off', `run ${i}: off was undone`);
     const seen = usagePosts(m).length;
     assert.ok(seen <= 1, `run ${i}: ${seen} documents`);
     m.setMode('accept');
@@ -325,11 +333,11 @@ test('A5a: off racing a send in progress is never undone, and nothing is sent af
 });
 
 // --- A5b / F3 ------------------------------------------------------------------
-test('A5b: off holds for the operating-system user whatever SANNR_HOME a process uses', async t => {
+test('A5b: off holds for every process run with this home directory, whatever SANNR_HOME it uses', async t => {
   const m = machine(t);
   const other = join(m.parent, 'other-state');
   assert.equal(json(await m.run(['telemetry', 'off', '--json'])).state, 'off');
-  assert.equal(m.readState(join(m.home, `.${PRODUCT}`, 'telemetry.json')).state, 'off', 'off was not recorded for the user');
+  assert.ok(existsSync(join(m.home, `.${PRODUCT}`, 'telemetry.off')), 'off was not recorded for the home directory');
   const result = await m.run(['--version'], { env: { [HOME_ENV_NAME]: other } });
   assert.doesNotMatch(result.stderr, NOTICE);
   assert.equal(existsSync(join(other, 'telemetry.json')), false);
@@ -340,6 +348,10 @@ test('A5b: off holds for the operating-system user whatever SANNR_HOME a process
   const reply = (await server.call(2, { method: 'tools/call', params: { name: 'api_saved_requests', arguments: { action: 'list' } } })).msg;
   assert.equal(reply.result.content.filter(block => NOTICE.test(block.text)).length, 0);
   await server.close();
+  assert.equal(existsSync(join(other, 'telemetry.json')), false);
+  await gitInit(m.root);
+  const connect = json(await m.run(['connect', '--json'], { env: { [HOME_ENV_NAME]: other } }));
+  assert.equal(connect.telemetry_notice, undefined, 'connect showed the notice while the home is off');
   assert.equal(existsSync(join(other, 'telemetry.json')), false);
 });
 
@@ -636,7 +648,7 @@ test('F11: a broken or abandoned send lock does not stop sending; a live one hol
 // stays off and nothing is sent later, until telemetry on.
 async function offHolds(m, label) {
   await m.settle();
-  assert.equal(m.readState().state, 'off', `${label}: off was undone`);
+  assert.equal(json(await m.run(['telemetry', 'status', '--json'])).state, 'off', `${label}: off was undone`);
   const seen = usagePosts(m).length;
   m.setMode('accept');
   for (let d = 0; d < 2; d++) { m.advance(25); await m.run(['--version']); await m.settle(); }
@@ -673,7 +685,7 @@ test('A5e: off reaches every state directory: old identifiers and counts are dis
   await m.settle();
   const old = JSON.parse(usagePosts(m)[0].body).install;
   await m.run(['stacks', '--json'], { env: inOther });
-  assert.equal(json(await m.run(['telemetry', 'off', '--json'], { env: inUser })).scope, 'user');
+  assert.equal(json(await m.run(['telemetry', 'off', '--json'], { env: inUser })).scope, 'home');
   await m.run(['--help'], { env: inOther });
   assert.equal(m.readState(join(other, 'telemetry.json')).install, null, 'the other directory kept its identifier while off');
   assert.equal(existsSync(join(other, 'telemetry', 'counts.jsonl')), false, 'the other directory kept its counts while off');
@@ -715,7 +727,7 @@ test('A5f: off never claims more than it recorded, and exits 1 when it could not
   const human = await m.run(['telemetry', 'off']);
   assert.equal(human.code, 1, human.stdout + human.stderr);
   assert.match(human.stdout, /^Telemetry is off only for /);
-  assert.doesNotMatch(human.stdout, /for this operating-system user/);
+  assert.doesNotMatch(human.stdout, /for every .* process run with the home directory/);
   const value = json(await m.run(['telemetry', 'off', '--json']));
   assert.equal(value.ok, false);
   assert.equal(value.scope, 'directory');
@@ -734,7 +746,7 @@ test('A5f: off never claims more than it recorded, and exits 1 when it could not
   const ok = machine(t);
   const recorded = await ok.run(['telemetry', 'off']);
   assert.equal(recorded.code, 0);
-  assert.match(recorded.stdout, /^Telemetry is off for this operating-system user, recorded in /);
+  assert.match(recorded.stdout, /^Telemetry is off for every \w+ process run with the home directory .*, recorded in .*telemetry\.off/);
 });
 
 test('N5, N7: the day\'s document survives off, on and reset, and on says what it lifted', async t => {
@@ -745,8 +757,8 @@ test('N5, N7: the day\'s document survives off, on and reset, and on says what i
   await m.settle();
   await m.run(['telemetry', 'off', '--json']);
   const on = json(await m.run(['telemetry', 'on', '--json']));
-  assert.equal(on.user_off_lifted, true);
-  assert.match((await m.run(['telemetry', 'off'])) && (await m.run(['telemetry', 'on'])).stdout, /off recorded for this operating-system user in .* is lifted, so every .* state directory of this user can count again/);
+  assert.equal(on.home_off_lifted, true);
+  assert.match((await m.run(['telemetry', 'off'])) && (await m.run(['telemetry', 'on'])).stdout, /The off recorded for the home directory .* is lifted, so \w+ processes run with it can count again/);
   await m.run(['telemetry', 'reset', '--json']);
   await m.run(['stacks', '--json']);
   await m.settle();
@@ -836,6 +848,181 @@ test('A17a: a test run never counts or sends, and a packed copy run as the packa
   assert.equal(existsSync(join(home, `.${PRODUCT}`, 'telemetry')), false);
 });
 
+// --- Amendment 5 -------------------------------------------------------------------
+
+test('A5g: off is a marker written at once: it never waits for a sender, and a sender that wakes after it sends nothing', async t => {
+  for (const kind of ['stalled before its check', 'hanging request']) {
+    // The second case runs in the home's own default directory.
+    const m = machine(t, { stateInHome: kind === 'hanging request' });
+    await m.run(['--version']);
+    m.advance(25);
+    if (kind === 'stalled before its check') m.stallSender(1500); else m.setMode('hang');
+    await m.run(['stacks', '--json']); // starts the sender
+    const off = await m.run(['telemetry', 'off', '--json']);
+    assert.equal(json(off).ok, true);
+    assert.ok(off.ms < 1000, `${kind}: off took ${Math.round(off.ms)} ms`);
+    assert.ok(existsSync(join(m.state, 'telemetry.off')) && existsSync(join(m.home, `.${PRODUCT}`, 'telemetry.off')));
+    const atOff = usagePosts(m).length;
+    m.stallSender(0);
+    await m.settle();
+    if (kind === 'stalled before its check') assert.equal(usagePosts(m).length, 0, 'a sender that woke after off sent');
+    else assert.ok(usagePosts(m).length <= atOff + 0, 'a request started after off');
+    // The identifier and counts the sender held are cleared at the next use.
+    await m.run(['stacks', '--json']);
+    assert.equal(m.readState().install, null, `${kind}: the identifier survived off`);
+    assert.equal(existsSync(m.counts) || existsSync(m.sent), false, `${kind}: counts or receipts survived off`);
+    await offHolds(m, kind);
+  }
+});
+
+test('A5g: on straight after an off that a send was holding keeps nothing from before', async t => {
+  const m = machine(t);
+  await m.run(['--version']);
+  await m.run(['stacks', '--json']);
+  m.advance(25);
+  m.setMode('hang');
+  await m.run(['stacks', '--json']); // the sender holds the lock with the counts
+  await m.run(['telemetry', 'off', '--json']);
+  const on = json(await m.run(['telemetry', 'on', '--json']));
+  assert.equal(on.ok, true);
+  await m.settle();
+  m.setMode('accept');
+  m.advance(24);
+  await m.run(['--help']);
+  await m.settle();
+  const last = JSON.parse(usagePosts(m).at(-1).body);
+  assert.deepEqual(last.features, {}, 'on revived counts from before off');
+  assert.equal(last.since, null);
+});
+
+test('A5h: a damaged or lost record of the home means off, and a directory that has seen the home off remembers it', async t => {
+  const user = m => join(m.home, `.${PRODUCT}`), other = m => join(m.parent, 'other-state');
+  for (const damage of ['marker', 'record']) {
+    const m = machine(t);
+    const inOther = { [HOME_ENV_NAME]: other(m) };
+    await m.run(['--version'], { env: inOther });
+    m.advance(25);
+    mkdirSync(user(m), { recursive: true });
+    writeFileSync(join(user(m), damage === 'marker' ? 'telemetry.off' : 'telemetry.json'), '{"v":1,"state":');
+    await m.run(['--version'], { env: inOther });
+    await m.settle();
+    assert.deepEqual(usagePosts(m), [], `a damaged home ${damage} did not hold off`);
+    const status = json(await m.run(['telemetry', 'status', '--json'], { env: inOther }));
+    assert.equal(status.state, 'off');
+    assert.match(status.reason.source, /damaged/);
+  }
+  const m = machine(t);
+  const inOther = { [HOME_ENV_NAME]: other(m) }, inUser = { [HOME_ENV_NAME]: user(m) };
+  await m.run(['--version'], { env: inOther });
+  await m.run(['telemetry', 'off', '--json'], { env: inUser });
+  await m.run(['stacks', '--json'], { env: inOther }); // sees the home's off
+  rmSync(user(m), { recursive: true, force: true }); // the home's record is lost
+  m.advance(25);
+  await m.run(['--version'], { env: inOther });
+  await m.settle();
+  assert.deepEqual(usagePosts(m), [], 'losing the home record turned another directory back on');
+  // Off run in a directory of its own holds there when the home's files are lost.
+  const own = machine(t);
+  await own.run(['--version']);
+  await own.run(['telemetry', 'off', '--json']);
+  rmSync(join(own.home, `.${PRODUCT}`), { recursive: true, force: true });
+  own.advance(25);
+  await own.run(['--version']);
+  await own.settle();
+  assert.deepEqual(usagePosts(own), [], 'off in a directory did not hold once the home was lost');
+  // A marker of the directory itself that cannot be read means off.
+  const damaged = machine(t);
+  await damaged.run(['--version']);
+  writeFileSync(join(damaged.state, 'telemetry.off'), 'not json');
+  damaged.advance(25);
+  await damaged.run(['--version']);
+  await damaged.settle();
+  assert.deepEqual(usagePosts(damaged), []);
+  assert.equal(json(await damaged.run(['telemetry', 'status', '--json'])).reason.source, 'marker_damaged');
+  // A record that says off holds off even without a marker.
+  const plain = machine(t);
+  await plain.run(['--version']);
+  writeFileSync(plain.stateFile, JSON.stringify({ ...plain.readState(), state: 'off' }));
+  plain.advance(25);
+  await plain.run(['--version']);
+  await plain.settle();
+  assert.deepEqual(usagePosts(plain), []);
+});
+
+test('A5i: off racing the first command of a fresh machine always holds', async t => {
+  for (let i = 0; i < 20; i++) {
+    const m = machine(t);
+    const first = m.run(i % 2 ? ['stacks', '--json'] : ['--version']);
+    await new Promise(resolve => setTimeout(resolve, i % 5 * 5));
+    const off = await m.run(['telemetry', 'off', '--json']);
+    await first;
+    assert.equal(off.code, 0, off.stdout + off.stderr);
+    assert.equal(json(off).ok, true);
+    m.advance(25);
+    await m.run(['--version']);
+    await m.settle();
+    assert.deepEqual(usagePosts(m), [], `run ${i}: sent after off`);
+  }
+});
+
+test('A5d: reset takes the lock: with a live send holding it, reset changes nothing and says why', async t => {
+  const m = machine(t);
+  await m.run(['--version']);
+  m.advance(25);
+  await m.run(['--version']);
+  await m.settle();
+  const install = m.readState().install;
+  mkdirSync(m.lock, { recursive: true });
+  writeFileSync(join(m.lock, 'owner.json'), JSON.stringify({ nonce: 'live', created_at: START + 25 * 3_600_000, pid: process.pid }));
+  const reset = await m.run(['telemetry', 'reset', '--json']);
+  assert.equal(reset.code, 1);
+  assert.match(reset.stderr, /TELEMETRY_STATE_BUSY/);
+  assert.equal(m.readState().install, install, 'reset changed the record without the lock');
+  rmSync(m.lock, { recursive: true, force: true });
+});
+
+test('F6: on and reset name an unwritable directory, not a send in progress', async t => {
+  if (process.platform === 'win32' || process.getuid?.() === 0) { t.skip('needs POSIX permissions'); return; }
+  const m = machine(t);
+  await m.run(['--version']);
+  await m.run(['telemetry', 'off', '--json']);
+  chmodSync(join(m.state, 'telemetry'), 0o500);
+  chmodSync(m.state, 0o500);
+  for (const sub of ['on', 'reset']) {
+    const result = await m.run(['telemetry', sub]);
+    assert.doesNotMatch(result.stderr, /send in progress/, sub);
+    if (result.code !== 0) assert.match(result.stderr, /UNWRITABLE|cannot be written/, sub);
+  }
+  chmodSync(m.state, 0o700);
+  chmodSync(join(m.state, 'telemetry'), 0o700);
+});
+
+test('A17b: the packed copy run with plain node and an exported SANNR_HOME leaves no telemetry state and sends nothing', async t => {
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-canary-')));
+  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  const canary = join(parent, 'home'), state = join(canary, 'state-home'), calls = join(parent, 'calls.jsonl'), preload = join(parent, 'preload.mjs');
+  mkdirSync(state, { recursive: true });
+  writeFileSync(preload, `import { appendFileSync } from 'node:fs';
+const actual = globalThis.fetch;
+globalThis.fetch = async (url, init = {}) => {
+  const href = String(url instanceof Request ? url.url : url);
+  if (new URL(href).hostname === '127.0.0.1') return actual(url, init);
+  appendFileSync(${JSON.stringify(calls)}, href + '\\n');
+  throw new Error('blocked by the test harness');
+};
+`);
+  const env = { ...process.env, HOME: canary, USERPROFILE: canary, [HOME_ENV_NAME]: state, NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` };
+  for (const name of ['TEST_ISOLATED_HOME', 'NODE_TEST_CONTEXT', 'DO_NOT_TRACK', TELEMETRY_ENV_NAME, 'CI', 'API_USAGE_LOG', 'npm_config_cache', ...CI_VARIABLES]) delete env[name];
+  const child = spawn(process.execPath, [join(ROOT, 'test/package.test.mjs')], { cwd: ROOT, env, stdio: 'ignore' });
+  const timer = setTimeout(() => child.kill("SIGKILL"), 110_000);
+  const code = await new Promise(resolve => child.once('close', resolve));
+  clearTimeout(timer);
+  assert.equal(code, 0, 'test/package.test.mjs failed when run with plain node');
+  const landed = readdirSync(canary, { recursive: true });
+  assert.deepEqual(landed.filter(name => name !== 'state-home'), [], `written into the inherited home: ${landed.join(', ')}`);
+  assert.equal(existsSync(calls) ? readFileSync(calls, 'utf8') : '', '', 'a request left the machine');
+});
+
 test('USE-1-12: eight commands started together when a document is due send one, whatever the file times say', async t => {
   // Every process's clock is months away from the file system's clock here.
   const m = machine(t);
@@ -855,7 +1042,7 @@ test('F8: reset makes a new identifier at the next document without adding a doc
   await m.settle();
   const first = JSON.parse(usagePosts(m)[0].body).install;
   for (let i = 0; i < 3; i++) {
-    assert.equal(json(await m.run(['telemetry', 'reset', '--json'])).install, 'made at the next send');
+    assert.equal(json(await m.run(['telemetry', 'reset', '--json'])).ok, true);
     await m.run(['stacks', '--json']);
     await m.settle();
   }

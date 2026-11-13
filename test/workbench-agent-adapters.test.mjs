@@ -1,5 +1,6 @@
 // Process-level proof of a standalone viewport and repository operator inbox.
 // Both the MCP peer and API fixture are child processes; no model or vendor runs.
+import './helpers/isolated-home.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';

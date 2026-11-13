@@ -3,6 +3,7 @@
 // npm install puts it one directory deeper than an unscoped one. These tests
 // lay the package out the way npm does for a repository-local install and for
 // an `npx` run, then read the command a refusal tells the user to run.
+import './helpers/isolated-home.mjs';
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";

@@ -2,6 +2,7 @@
 // are pinned against synthetic ledger fixtures with the client's file shapes,
 // and the end-to-end shape against a real MCP host process whose numbers must
 // equal `sessions --json` for the same session. No request leaves loopback.
+import './helpers/isolated-home.mjs';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';

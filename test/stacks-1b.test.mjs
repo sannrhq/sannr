@@ -1,6 +1,7 @@
 // STACKS-1B integration specimens contain synthetic structure only. Legacy
 // records are authored as fixtures; migration must not reinterpret them as
 // newly executed observations. Only child-process loopback witnesses do I/O.
+import './helpers/isolated-home.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, rmSync, realpathSync, statSync } from 'node:fs';

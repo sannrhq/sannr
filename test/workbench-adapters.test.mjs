@@ -1,5 +1,6 @@
 // Exercise public process adapters, not just the shared dispatcher. All traffic
 // is a test-owned loopback fixture; invocation values and HOME stay isolated.
+import './helpers/isolated-home.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';

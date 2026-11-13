@@ -1,5 +1,6 @@
 // Independent install-policy checks. All API execution is disabled; files on
 // disk, rather than the implementation's plan, are the write-report oracle.
+import './helpers/isolated-home.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
