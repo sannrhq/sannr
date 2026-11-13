@@ -11,6 +11,7 @@
 //
 // Every response is checked against invariants. A violation is a bug.
 
+import './helpers/isolated-home.mjs';
 import { spawn } from "node:child_process";
 import { start } from "./fixture-server.mjs";
 import { fileURLToPath } from "node:url";

@@ -1,3 +1,4 @@
+import './helpers/isolated-home.mjs';
 import { LAYOUT } from "../lib/layout.mjs";
 // CAPABILITIES — the tool's inventory of security-relevant filesystem and
 // network capability classes. The manifest is

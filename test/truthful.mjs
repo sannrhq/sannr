@@ -16,6 +16,7 @@
 // against what actually happened. A divergence is a lie, and a lie is a bug
 // even when the shape is perfect.
 
+import './helpers/isolated-home.mjs';
 import { spawn } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";

@@ -17,6 +17,7 @@
 // because module-load state (local context) versus per-request state (the
 // registry, the provider file) is exactly what these scenarios stress.
 
+import './helpers/isolated-home.mjs';
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";

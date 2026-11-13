@@ -450,6 +450,7 @@
     "test/help.test.mjs",
     "test/helpers/ephemeral-tls.mjs",
     "test/helpers/graph-stack-fixture.mjs",
+    "test/helpers/isolated-home.mjs",
     "test/helpers/layout-fixture.mjs",
     "test/helpers/shared-ci-pack.mjs",
     "test/helpers/stack-fixture.mjs",
