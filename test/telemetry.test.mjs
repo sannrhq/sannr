@@ -1,8 +1,11 @@
-// USE-1: the anonymous daily usage document, observed only from outside —
-// through the CLI and the MCP server's stdio — in an isolated machine state
-// directory. A harness-owned fetch preload (never a product override) records
-// every attempted request and answers for the fixed destination; anything else
-// that is not loopback is blocked before the wire, so nothing reaches a real host.
+// USE-1: the daily usage document, observed only from outside — through the
+// CLI and the MCP server's stdio — in an isolated machine state directory and
+// HOME. A harness-owned preload (never a product override) records every
+// attempted fetch, answers for the fixed destination in the mode under test,
+// passes loopback API traffic through and blocks everything else before the
+// wire, so nothing reaches a real host. The same preload pins every process's
+// clock to a fixed midday that only the test moves (m.advance), so no test
+// depends on the time of day or on file times.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -12,15 +15,21 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { hostname, tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { CI_VARIABLES } from '../lib/telemetry.mjs';
-import { HOME_ENV_NAME, PRODUCT, TELEMETRY_ENV_NAME, USAGE_URL } from '../lib/brand.mjs';
+import { HOME_ENV_NAME, PRODUCT, TELEMETRY_CHECKOUT_ENV_NAME, TELEMETRY_ENV_NAME, TOOL_NAME, USAGE_URL } from '../lib/brand.mjs';
+import { cliFeatureNames } from '../lib/telemetry.mjs';
+import { SAVED_REQUEST_TOOL } from '../lib/saved-request-actions.mjs';
+import { WORKBENCH_AGENT_TOOL } from '../lib/workbench-agent-tools.mjs';
+import { NOTE_REVIEW_TOOL, NOTE_RETIRE_TOOL, NOTE_CONTEXT_TOOL } from '../lib/note-review-actions.mjs';
 
-const ROOT = fileURLToPath(new URL('../', import.meta.url));
+const ROOT = realpathSync(fileURLToPath(new URL('../', import.meta.url)));
 const CLI = join(ROOT, 'bin/cli.mjs');
 const SCHEMA = JSON.parse(readFileSync(join(ROOT, 'lib/usage.schema.json'), 'utf8'));
 const VERSION = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
-const today = () => new Date().toISOString().slice(0, 10);
-const yesterday = () => new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+// Written out here, not imported, so a variable dropped from the code fails.
+const CI_VARIABLES = ['GITHUB_ACTIONS', 'GITLAB_CI', 'BUILDKITE', 'CIRCLECI', 'JENKINS_URL', 'TF_BUILD', 'TEAMCITY_VERSION'];
+const START = Date.parse('2026-06-15T12:00:00.000Z');
+const day = n => new Date(START + n * 86_400_000).toISOString().slice(0, 10);
+const IS_CHECKOUT = existsSync(join(ROOT, '.git'));
 
 // --- a minimal validator for exactly the keywords the contract uses ----------
 function validate(schema, value, path = '$') {
@@ -53,41 +62,49 @@ function validate(schema, value, path = '$') {
 // --- one isolated machine --------------------------------------------------------
 function machine(t, { project = 'project' } = {}) {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-')));
-  t.after(() => { try { chmodSync(join(parent, 'state'), 0o700); } catch { /* absent */ } rmSync(parent, { recursive: true, force: true }); });
+  t.after(() => { for (const dir of ['state', 'other-state']) try { chmodSync(join(parent, dir), 0o700); } catch { /* absent */ }
+    rmSync(parent, { recursive: true, force: true }); });
   const home = join(parent, 'home'), state = join(parent, 'state'), root = join(parent, project);
   mkdirSync(home); mkdirSync(root);
-  const calls = join(parent, 'calls.jsonl'), mode = join(parent, 'mode.txt'), preload = join(parent, 'preload.mjs');
+  const calls = join(parent, 'calls.jsonl'), mode = join(parent, 'mode.txt'), clock = join(parent, 'clock.txt'), preload = join(parent, 'preload.mjs');
   writeFileSync(mode, 'accept');
+  writeFileSync(clock, String(START - Date.now()));
   writeFileSync(preload, `import { appendFileSync, readFileSync } from 'node:fs';
+const RealDate = Date;
+const offset = () => Number(readFileSync(${JSON.stringify(clock)}, 'utf8'));
+globalThis.Date = class extends RealDate {
+  constructor(...args) { if (args.length) super(...args); else super(RealDate.now() + offset()); }
+  static now() { return RealDate.now() + offset(); }
+};
 const actual = globalThis.fetch;
 globalThis.fetch = async (url, init = {}) => {
   const href = String(url instanceof Request ? url.url : url);
-  const target = new URL(href);
-  if (target.hostname === '127.0.0.1') return actual(url, init);
-  appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ url: href, method: init.method, redirect: init.redirect,
+  if (new URL(href).hostname === '127.0.0.1') return actual(url, init);
+  appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ url: href, method: init.method, redirect: init.redirect, cwd: process.cwd(),
+    proxy: Object.keys(process.env).filter(name => /proxy/i.test(name)),
     headers: Object.fromEntries(new Headers(init.headers)), body: init.body === undefined ? null : Buffer.from(init.body).toString('base64') }) + '\\n');
   if (href !== ${JSON.stringify(USAGE_URL)}) throw new Error('blocked by the test harness');
   const mode = readFileSync(${JSON.stringify(mode)}, 'utf8').trim();
   if (mode === 'throw') throw new TypeError('fetch failed');
   if (mode === 'hang') return new Promise((_, reject) => init.signal?.addEventListener('abort', () => reject(init.signal.reason)));
+  if (mode === 'slow') await new Promise(resolve => setTimeout(resolve, 400));
   if (mode === 'redirect') return new Response(null, { status: 302, headers: { location: 'https://example.invalid/elsewhere' } });
-  return new Response(null, { status: mode === 'accept' ? 202 : Number(mode) });
+  return new Response(null, { status: ['accept', 'slow'].includes(mode) ? 202 : Number(mode) });
 };
 `);
-  const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, [HOME_ENV_NAME]: state,
+  // The checkout switch names this checkout's own real path: only a test does.
+  const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, [HOME_ENV_NAME]: state, [TELEMETRY_CHECKOUT_ENV_NAME]: ROOT,
     NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`, NO_COLOR: '1', API_FRICTION_OFF: '1' };
   const m = {
     parent, home, state, root, env,
     stateFile: join(state, 'telemetry.json'), lock: join(state, 'telemetry', '.send.lock'), sent: join(state, 'telemetry', 'sent'),
+    counts: join(state, 'telemetry', 'counts.jsonl'),
     setMode: value => writeFileSync(mode, value),
+    advance: hours => writeFileSync(clock, String(Number(readFileSync(clock, 'utf8')) + hours * 3_600_000)),
     calls: () => existsSync(calls) ? readFileSync(calls, 'utf8').split('\n').filter(Boolean).map(line => {
       const row = JSON.parse(line); return { ...row, body: row.body === null ? null : Buffer.from(row.body, 'base64').toString('utf8') };
     }) : [],
-    readState: () => JSON.parse(readFileSync(join(state, 'telemetry.json'), 'utf8')),
-    editState: change => { const s = m.readState(); writeFileSync(join(state, 'telemetry.json'), JSON.stringify({ ...s, ...change(s) })); },
-    // Pretend the notice was emitted more than a day ago (the 24-hour wait is
-    // a rule this test does not want to sleep through).
-    age: () => m.editState(() => ({ noticed_at: new Date(Date.now() - 25 * 3_600_000).toISOString() })),
+    readState: (file = join(state, 'telemetry.json')) => JSON.parse(readFileSync(file, 'utf8')),
     run: (args, options = {}) => run(args, { cwd: options.cwd ?? root, env: { ...env, ...options.env }, input: options.input }),
     // A started send owns the lock until its detached sender finishes.
     settle: async (limit = 15_000) => {
@@ -112,8 +129,9 @@ function run(args, { cwd, env, input }) {
   });
 }
 const json = result => { try { return JSON.parse(result.stdout); } catch { assert.fail(`not JSON: ${result.stdout}${result.stderr}`); } };
-const NOTICE = /telemetry: .* sends anonymous usage counts/;
+const NOTICE = /telemetry: once a day .* sends usage counts/;
 const usagePosts = m => m.calls().filter(call => call.url === USAGE_URL);
+const show = async m => json(await m.run(['telemetry', 'show', '--json']));
 
 async function gitInit(cwd) {
   const git = spawn('git', ['init', '--quiet'], { cwd, stdio: 'ignore' });
@@ -121,9 +139,14 @@ async function gitInit(cwd) {
 }
 
 async function loopbackApi(t) {
-  const server = createServer((req, res) => { res.setHeader('content-type', 'application/json'); res.end('{"ok":true}'); });
+  const server = createServer(async (req, res) => {
+    for await (const _ of req) { /* drain */ }
+    if (req.url === '/redir') { res.writeHead(302, { location: '/final' }); res.end(); return; }
+    res.setHeader('content-type', 'application/json');
+    res.end(req.url === '/graphql' ? '{"data":{"state":"ready"}}' : '{"ok":true}');
+  });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => server.close());
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
   return `http://127.0.0.1:${server.address().port}`;
 }
 
@@ -141,8 +164,10 @@ test('USE-1-01: a fresh machine shows the notice once on stderr, sends nothing a
     const later = await m.run(args);
     assert.doesNotMatch(later.stderr, NOTICE, `${args.join(' ')} repeated the notice`);
   }
+  m.advance(23);
+  await m.run(['--version']);
   await m.settle();
-  assert.deepEqual(m.calls(), [], 'a request was attempted on the first day');
+  assert.deepEqual(m.calls(), [], 'a request was attempted within 24 hours of the notice');
   const status = json(await m.run(['telemetry', 'status', '--json']));
   assert.equal(status.state, 'on');
   assert.equal(status.install, 'absent');
@@ -155,8 +180,8 @@ test('USE-1-02/06: a day after the notice one command sends exactly one valid do
   const m = machine(t);
   await m.run(['--version']);
   await m.run(['stacks', '--json']);
-  m.age();
-  const first = await m.run(['--version']);
+  m.advance(25);
+  const first = await m.run(['--version'], { env: { HTTPS_PROXY: 'http://127.0.0.1:9', HTTP_PROXY: 'http://127.0.0.1:9', all_proxy: 'x', NODE_USE_ENV_PROXY: '1' } });
   assert.equal(first.code, 0);
   await m.settle();
   const posts = m.calls();
@@ -168,6 +193,8 @@ test('USE-1-02/06: a day after the notice one command sends exactly one valid do
   assert.deepEqual(Object.keys(post.headers).sort(), ['content-type', 'user-agent']);
   assert.equal(post.headers['content-type'], 'application/json');
   assert.equal(post.headers['user-agent'], `${PRODUCT}/${VERSION}`);
+  assert.deepEqual(post.proxy, [], 'a proxy variable reached the sender');
+  assert.equal(post.cwd, realpathSync(join(m.state, 'telemetry')), 'the sender holds the project directory');
   assert.ok(Buffer.byteLength(post.body) <= 2048);
   const document = JSON.parse(post.body);
   assert.deepEqual(validate(SCHEMA, document), []);
@@ -175,28 +202,30 @@ test('USE-1-02/06: a day after the notice one command sends exactly one valid do
   assert.equal(document.since, null);
   assert.equal(document.version, VERSION);
   assert.deepEqual(document.features, { stacks: 1, version: 1 });
-  const receipts = readdirSync(m.sent);
-  assert.equal(receipts.length, 1);
-  assert.equal(readFileSync(join(m.sent, receipts[0]), 'utf8'), post.body, 'the receipt is not the sent bytes');
+  const shownAfter = await show(m);
+  assert.equal(shownAfter.last_delivered.body, post.body, 'the delivered receipt is not the sent bytes');
+  assert.equal(shownAfter.last_attempt.outcome, 'delivered');
+  assert.equal(readdirSync(m.sent).length, 1);
 
+  m.advance(9); // still the same UTC day (22:00)
   for (const args of [['--version'], ['stacks', '--json']]) await m.run(args);
   await m.settle();
   assert.equal(m.calls().length, 1, 'a second document went out the same UTC day');
 
   // USE-1-06: the next day, show prints exactly what the next send carries.
-  m.editState(() => ({ last_sent: yesterday() }));
-  const shown = json(await m.run(['telemetry', 'show', '--json']));
+  m.advance(24);
+  const shown = await show(m);
   assert.equal(shown.destination.url, USAGE_URL);
-  assert.equal(shown.last_receipt.body, post.body);
   await m.run(['--help']);
   await m.settle();
   assert.equal(m.calls().length, 2);
   assert.equal(m.calls()[1].body, shown.body, 'show differed from the bytes sent');
   assert.equal(JSON.parse(shown.body).install, document.install);
+  assert.equal(JSON.parse(shown.body).since, day(1));
 });
 
-// --- USE-1-03 -------------------------------------------------------------------
-test('USE-1-03: the document carries each command under its fixed name, the API requests and since', async t => {
+// --- USE-1-03 and F7 ------------------------------------------------------------
+test('USE-1-03: counts under fixed names; api_calls counts requests to the person\'s APIs, protocol included, not the probe', async t => {
   const m = machine(t);
   const api = await loopbackApi(t);
   await m.run(['--version']);
@@ -205,39 +234,39 @@ test('USE-1-03: the document carries each command under its fixed name, the API 
     const result = await m.run(['request', 'GET', '/ping', '--stack', 'local']);
     assert.equal(result.code, 0, result.stdout + result.stderr);
   }
+  const redirected = await m.run(['request', 'GET', '/redir', '--stack', 'local']);
+  assert.equal(JSON.parse(redirected.stdout).status, 200, redirected.stdout + redirected.stderr);
+  writeFileSync(join(m.root, 'graphql.json'), JSON.stringify({ protocol: 'graphql', path: '/graphql', graphql: { document: 'query Probe { state }' } }));
+  const protocol = await m.run(['protocol', 'graphql.json', '--stack', 'local']);
+  assert.equal(protocol.code, 0, protocol.stdout + protocol.stderr);
+  await m.run(['doctor', '--probe', `${api}/ping`]);
   await m.run(['suite', 'list']);
-  await m.run(['status', '--offline']);
   await m.run(['context', '--env', 'x', 'nonsense']);
-  m.age();
-  m.editState(() => ({ last_sent: yesterday(), install: '00000000-0000-4000-8000-000000000000' }));
+  m.advance(25);
   await m.run(['--help']);
   await m.settle();
   const [post] = m.calls();
   const document = JSON.parse(post.body);
-  assert.deepEqual(document.features, { context: 1, doctor: 1, request: 3, stack_add: 1, suite_list: 1, version: 1 });
-  assert.equal(document.api_calls, 3);
-  assert.equal(document.since, yesterday());
-  assert.equal(document.install, '00000000-0000-4000-8000-000000000000');
-  // The next document starts from zero and says when the previous one went.
+  assert.deepEqual(document.features, { context: 1, doctor: 1, protocol: 1, request: 4, stack_add: 1, suite_list: 1, version: 1 });
+  assert.equal(document.api_calls, 5, 'three requests, one redirected request and one GraphQL request; not the probe');
   const status = json(await m.run(['telemetry', 'status', '--json']));
-  assert.equal(status.last_sent, today());
-  const shown = JSON.parse(json(await m.run(['telemetry', 'show', '--json'])).body);
-  assert.deepEqual(shown.features, { help: 1 });
-  assert.equal(shown.api_calls, 0);
-  assert.equal(shown.since, today());
+  assert.equal(status.last_sent, day(1));
+  const next = JSON.parse((await show(m)).body);
+  assert.deepEqual(next.features, { help: 1 });
+  assert.equal(next.api_calls, 0);
+  assert.equal(next.since, day(1));
 });
 
 // --- USE-1-04 -------------------------------------------------------------------
 test('USE-1-04: off sends nothing, deletes the identifier and counts, and holds across processes and projects; on starts again', async t => {
   const m = machine(t);
   await m.run(['--version']);
-  m.age();
+  m.advance(25);
   await m.run(['--version']);
   await m.settle();
   assert.equal(m.calls().length, 1);
   const oldInstall = JSON.parse(m.calls()[0].body).install;
-  m.editState(() => ({ last_sent: yesterday() }));
-  // counts waiting to be sent, then off
+  m.advance(24);
   await m.run(['stacks', '--json']);
   await m.settle();
   const before = m.calls().length;
@@ -249,29 +278,71 @@ test('USE-1-04: off sends nothing, deletes the identifier and counts, and holds 
   const stored = readdirSync(m.state, { recursive: true }).map(name => join(m.state, name))
     .filter(path => statSync(path).isFile()).map(path => readFileSync(path, 'utf8')).join('\n');
   assert.doesNotMatch(stored, new RegExp(oldInstall), 'the identifier survived off');
-  assert.equal(JSON.parse(json(await m.run(['telemetry', 'show', '--json'])).body).api_calls, 0);
+  assert.equal(JSON.parse((await show(m)).body).api_calls, 0);
   const other = join(m.parent, 'second-project');
   mkdirSync(other);
   for (const cwd of [m.root, other]) for (const args of [['--version'], ['stacks', '--json'], ['--help']]) {
+    m.advance(25);
     const result = await m.run(args, { cwd });
     assert.doesNotMatch(result.stderr, NOTICE);
   }
   await m.settle();
   assert.equal(m.calls().length, before, 'a request was made while off');
   assert.equal(json(await m.run(['telemetry', 'status', '--json'])).state, 'off');
-  assert.deepEqual(readdirSync(join(m.state, 'telemetry')).filter(name => name !== '.send.lock'), []);
 
-  const on = json(await m.run(['telemetry', 'on', '--json']));
-  assert.equal(on.state, 'on');
+  assert.equal(json(await m.run(['telemetry', 'on', '--json'])).state, 'on');
   await m.run(['--version']);
   await m.settle();
   assert.equal(m.calls().length, before + 1);
   const fresh = JSON.parse(m.calls().at(-1).body);
   assert.notEqual(fresh.install, oldInstall);
   assert.equal(fresh.since, null);
+  assert.deepEqual(fresh.features, {}, 'counts from before off survived it');
+  assert.equal(fresh.api_calls, 0);
 });
 
-// --- USE-1-05 -------------------------------------------------------------------
+// --- A5a / F1 ------------------------------------------------------------------
+test('A5a: off racing a send in progress is never undone, and nothing is sent afterwards', async t => {
+  for (let i = 0; i < 12; i++) {
+    const m = machine(t);
+    await m.run(['--version']);
+    m.advance(25);
+    m.setMode('slow');
+    const due = m.run(['stacks', '--json']);
+    await new Promise(resolve => setTimeout(resolve, (i % 6) * 15));
+    const off = await m.run(['telemetry', 'off', '--json']);
+    await due;
+    assert.equal(json(off).state, 'off');
+    await m.settle();
+    assert.equal(m.readState().state, 'off', `run ${i}: off was written back to on`);
+    const seen = usagePosts(m).length;
+    assert.ok(seen <= 1, `run ${i}: ${seen} documents`);
+    m.setMode('accept');
+    for (let d = 0; d < 2; d++) { m.advance(25); await m.run(['--version']); await m.settle(); }
+    assert.equal(usagePosts(m).length, seen, `run ${i}: sending continued after off`);
+  }
+});
+
+// --- A5b / F3 ------------------------------------------------------------------
+test('A5b: off holds for the operating-system user whatever SANNR_HOME a process uses', async t => {
+  const m = machine(t);
+  const other = join(m.parent, 'other-state');
+  assert.equal(json(await m.run(['telemetry', 'off', '--json'])).state, 'off');
+  assert.equal(m.readState(join(m.home, `.${PRODUCT}`, 'telemetry.json')).state, 'off', 'off was not recorded for the user');
+  const result = await m.run(['--version'], { env: { [HOME_ENV_NAME]: other } });
+  assert.doesNotMatch(result.stderr, NOTICE);
+  assert.equal(existsSync(join(other, 'telemetry.json')), false);
+  const status = json(await m.run(['telemetry', 'status', '--json'], { env: { [HOME_ENV_NAME]: other } }));
+  assert.equal(status.state, 'off');
+  const server = mcp(t, m, { [HOME_ENV_NAME]: other });
+  await server.call(1, { method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test' } } });
+  const reply = (await server.call(2, { method: 'tools/call', params: { name: 'api_saved_requests', arguments: { action: 'list' } } })).msg;
+  assert.equal(reply.result.content.filter(block => NOTICE.test(block.text)).length, 0);
+  await server.close();
+  assert.equal(existsSync(join(other, 'telemetry.json')), false);
+});
+
+// --- USE-1-05 and A17 ----------------------------------------------------------
 test('USE-1-05: every environment switch and CI variable means no count, identifier, request, notice or state', async t => {
   const switches = [[TELEMETRY_ENV_NAME, '0'], [TELEMETRY_ENV_NAME, 'off'], [TELEMETRY_ENV_NAME, 'false'], [TELEMETRY_ENV_NAME, 'NO'],
     ['DO_NOT_TRACK', '1'], ['CI', 'true'], ['CI', '1'], ...CI_VARIABLES.map(name => [name, 'true'])];
@@ -285,18 +356,33 @@ test('USE-1-05: every environment switch and CI variable means no count, identif
     const status = json(await m.run(['telemetry', 'status', '--json'], { env: { [name]: value } }));
     assert.equal(status.state, 'off');
     assert.equal(status.reason.variable, name);
-    // An install already told and due: still nothing counted or sent.
     await m.run(['--version']);
-    m.age();
+    m.advance(25);
     await m.run(['stacks', '--json'], { env: { [name]: value } });
     await m.run(['--version'], { env: { [name]: value } });
     await m.settle();
     assert.deepEqual(m.calls(), [], `${name}=${value} sent`);
-    assert.deepEqual(JSON.parse(json(await m.run(['telemetry', 'show', '--json'])).body).features, { version: 1 }, `${name}=${value} counted`);
+    assert.deepEqual(JSON.parse((await show(m)).body).features, { version: 1 }, `${name}=${value} counted`);
   }
   for (const value of ['0', 'false']) {
     const m = machine(t);
     assert.match((await m.run(['--version'], { env: { CI: value } })).stderr, NOTICE, `CI=${value} is not a CI environment`);
+  }
+});
+
+test('A17: a source checkout never counts or sends unless a test names the checkout', async t => {
+  if (!IS_CHECKOUT) { t.skip('this package is not a source checkout'); return; }
+  for (const value of [undefined, '', '1', 'true', '/', join(ROOT, 'lib')]) {
+    const m = machine(t);
+    const env = value === undefined ? {} : { [TELEMETRY_CHECKOUT_ENV_NAME]: value };
+    if (value === undefined) delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+    const result = await m.run(['--version'], { env });
+    assert.doesNotMatch(result.stderr, NOTICE, `checkout switch ${value} showed the notice`);
+    await m.run(['stacks', '--json'], { env });
+    assert.equal(existsSync(m.state), false, `checkout switch ${value} wrote state`);
+    const status = json(await m.run(['telemetry', 'status', '--json'], { env }));
+    assert.equal(status.state, 'off');
+    assert.equal(status.reason.source, 'checkout');
   }
 });
 
@@ -306,7 +392,7 @@ test('USE-1-07: a failing, refusing, redirecting or silent endpoint changes no o
     const m = machine(t);
     await m.run(['--version']);
     await m.run(['stacks', '--json']);
-    m.age();
+    m.advance(25);
     m.setMode(mode);
     const runs = mode === 'hang' ? 2 : 4;
     for (let i = 0; i < runs; i++) {
@@ -324,9 +410,12 @@ test('USE-1-07: a failing, refusing, redirecting or silent endpoint changes no o
     const attempts = usagePosts(m);
     assert.ok(attempts.length >= 1 && attempts.length <= 3, `${mode}: ${attempts.length} attempts`);
     if (mode !== 'hang') assert.equal(attempts.length, 3, `${mode}: retries in a day`);
+    const failed = await show(m);
+    assert.equal(failed.last_delivered, null, `${mode}: a failed attempt reads as delivered`);
+    assert.equal(failed.last_attempt.outcome, 'not-delivered');
     // The next UTC day, an accepting endpoint receives the counts kept so far.
     m.setMode('accept');
-    m.editState(() => ({ attempt_day: yesterday() }));
+    m.advance(24);
     await m.run(['--help']);
     await m.settle();
     const delivered = JSON.parse(usagePosts(m).at(-1).body);
@@ -336,8 +425,8 @@ test('USE-1-07: a failing, refusing, redirecting or silent endpoint changes no o
   }
 });
 
-// --- USE-1-08 -------------------------------------------------------------------
-test('USE-1-08: JSON stays JSON with the notice pending, and connect carries the notice as a field', async t => {
+// --- USE-1-08 and F9 -------------------------------------------------------------
+test('USE-1-08: JSON stays JSON with the notice pending, connect carries it as a field, and a dry run writes and sends nothing', async t => {
   for (const args of [['stacks', '--json'], ['telemetry', 'status', '--json'], ['telemetry', 'show', '--json'],
     ['capabilities', '--json'], ['doctor', '--offline', '--json']]) {
     const m = machine(t);
@@ -347,23 +436,51 @@ test('USE-1-08: JSON stays JSON with the notice pending, and connect carries the
   }
   const m = machine(t);
   await gitInit(m.root);
+  const dry = json(await m.run(['connect', '--dry-run', '--json']));
+  assert.equal(dry.telemetry_notice, undefined, 'a dry run recorded the notice');
+  assert.equal(existsSync(m.state), false, 'a dry run wrote telemetry state');
   const connect = await m.run(['connect', '--json']);
-  const report = json(connect);
-  assert.match(report.telemetry_notice, NOTICE);
+  assert.match(json(connect).telemetry_notice, NOTICE);
   assert.doesNotMatch(connect.stderr, NOTICE);
-  const again = json(await m.run(['connect', '--json']));
-  assert.equal(again.telemetry_notice, undefined);
+  assert.equal(json(await m.run(['connect', '--json'])).telemetry_notice, undefined);
+  m.advance(25);
+  const before = readFileSync(m.stateFile, 'utf8');
+  await m.run(['migrate', '--dry-run', '--json']);
+  await m.run(['connect', '--dry-run', '--json']);
+  await m.settle();
+  assert.deepEqual(m.calls(), [], 'a dry run started the daily send');
+  assert.equal(readFileSync(m.stateFile, 'utf8'), before);
   const human = machine(t);
   await gitInit(human.root);
-  const text = await human.run(['connect']);
-  assert.match(text.stdout, NOTICE);
+  assert.match((await human.run(['connect'])).stdout, NOTICE);
+});
+
+// --- A14a / F5 -----------------------------------------------------------------
+test('A14a: the pointer block connect writes and the request skill say what "opt out" means', async t => {
+  // Both shapes of the block: a repository with no API stack yet, and one with a stack.
+  for (const withStack of [false, true]) {
+    const m = machine(t);
+    await gitInit(m.root);
+    if (withStack) assert.equal((await m.run(['stack', 'add', 'local', '--base-url', 'http://127.0.0.1:9', '--json'])).code, 0);
+    assert.equal((await m.run(['connect', '--json'])).code, 0);
+    let blocks = 0;
+    for (const file of ['AGENTS.md', 'CLAUDE.md']) {
+      if (!existsSync(join(m.root, file))) continue;
+      const text = readFileSync(join(m.root, file), 'utf8');
+      if (!text.includes(`<!-- ${PRODUCT}:begin -->`)) continue;
+      blocks++;
+      assert.match(text, /usage counts once a day unless turned off; if a person says "opt out", run .*telemetry off/, `${file} (stack: ${withStack})`);
+    }
+    assert.ok(blocks >= 1, 'connect wrote no pointer block');
+  }
+  assert.match(readFileSync(join(ROOT, 'skill/SKILL.md'), 'utf8'), /"opt out", run `\w+ telemetry off`/);
 });
 
 // --- USE-1-09 -------------------------------------------------------------------
 // The server is killed when the test ends, passed or failed, and every wait
 // for a reply has a deadline, so a broken behavior fails instead of hanging.
-function mcp(t, m) {
-  const child = spawn(process.execPath, [CLI, 'mcp', 'serve'], { cwd: m.root, env: { ...m.env, API_CONTEXT_DIR: m.root }, stdio: ['pipe', 'pipe', 'pipe'] });
+function mcp(t, m, extraEnv = {}) {
+  const child = spawn(process.execPath, [CLI, 'mcp', 'serve'], { cwd: m.root, env: { ...m.env, API_CONTEXT_DIR: m.root, ...extraEnv }, stdio: ['pipe', 'pipe', 'pipe'] });
   const exited = new Promise(resolve => child.once('close', resolve));
   t.after(async () => { if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exited; } });
   const replies = new Map(), waiters = new Map();
@@ -404,10 +521,10 @@ test('USE-1-09: the MCP server counts tool calls, relays the notice once and sen
   assert.equal(second.result.content.filter(block => NOTICE.test(block.text)).length, 0);
   await server.call(4, { method: 'tools/call', params: { name: 'no_such_tool', arguments: {} } });
   await server.close();
-  const shown = JSON.parse(json(await m.run(['telemetry', 'show', '--json'])).body);
-  assert.deepEqual(shown.features, { mcp_api_saved_requests: 1 }, 'the call before the notice is counted, or an undeclared name was');
+  assert.deepEqual(JSON.parse((await show(m)).body).features, { mcp_api_saved_requests: 1 },
+    'the call before the notice is counted, or an undeclared name was');
 
-  m.age();
+  m.advance(25);
   m.setMode('hang');
   const later = mcp(t, m);
   await later.call(1, { method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test' } } });
@@ -434,19 +551,19 @@ test('USE-1-10: no folder, repository, host, path, header, credential name or ma
   assert.equal((await m.run(['stack', 'add', 'zqstackname', '--base-url', api, '--auth', 'header:X-Zqheader-Name:ZQ_CREDENTIAL_VARIABLE'], { env })).code, 0);
   for (const path of ['/zqpath-private/one', '/zqpath-private/two?zqquery=zqvalue'])
     await m.run(['request', 'GET', path, '--stack', 'zqstackname'], { env });
-  m.age();
+  m.advance(25);
   await m.run(['stacks', '--json'], { env });
   await m.settle();
   assert.equal(usagePosts(m).length, 1);
   const receipts = readdirSync(m.sent).map(name => readFileSync(join(m.sent, name), 'utf8'));
-  const bytes = [...usagePosts(m).map(call => JSON.stringify(call)), ...receipts].join('\n').toLowerCase();
+  const bytes = [...usagePosts(m).map(call => JSON.stringify({ ...call, cwd: undefined })), ...receipts].join('\n').toLowerCase();
   const known = ['zqfolder', 'zqrepository', 'zqowner', 'zqstackname', 'zqpath', 'zqquery', 'zqvalue', 'zqheader', 'zq_credential',
     'zq-credential', secret, '127.0.0.1', `:${port}`, m.parent.toLowerCase(), userInfo().username.toLowerCase(), hostname().toLowerCase()];
   for (const value of known) assert.equal(bytes.includes(value), false, `${value} left the machine`);
   assert.equal(JSON.parse(usagePosts(m)[0].body).api_calls, 2);
 });
 
-// --- USE-1-11 -------------------------------------------------------------------
+// --- USE-1-11 and F11 ------------------------------------------------------------
 test('USE-1-11: a corrupt state file, a read-only or file state directory: commands work, nothing is sent, status says why', async t => {
   const corrupt = machine(t);
   mkdirSync(corrupt.state);
@@ -478,38 +595,144 @@ test('USE-1-11: a corrupt state file, a read-only or file state directory: comma
   // connect records its notice itself; a damaged record is still not replaced.
   await gitInit(corrupt.root);
   const before = readFileSync(corrupt.stateFile, 'utf8');
-  const connect = await corrupt.run(['connect', '--json']);
-  assert.equal(json(connect).telemetry_notice, undefined, 'connect showed a notice it cannot record');
+  assert.equal(json(await corrupt.run(['connect', '--json'])).telemetry_notice, undefined, 'connect showed a notice it cannot record');
   assert.equal(readFileSync(corrupt.stateFile, 'utf8'), before, 'connect replaced a damaged state file');
   // off replaces a corrupt record, which is the person's way out.
   assert.equal(json(await corrupt.run(['telemetry', 'off', '--json'])).state, 'off');
 });
 
-// --- USE-1-12 -------------------------------------------------------------------
-test('USE-1-12: commands started together when a document is due send at most one', async t => {
+test('F11: a broken or abandoned send lock does not stop sending; a live one holds', async t => {
+  for (const kind of ['file', 'empty', 'old', 'future']) {
+    const m = machine(t);
+    await m.run(['--version']);
+    m.advance(25);
+    mkdirSync(join(m.state, 'telemetry'), { recursive: true });
+    if (kind === 'file') writeFileSync(m.lock, 'stray');
+    else {
+      mkdirSync(m.lock);
+      const created = kind === 'old' ? START + 25 * 3_600_000 - 10 * 60_000 : START + 30 * 86_400_000;
+      if (kind !== 'empty') writeFileSync(join(m.lock, 'owner.json'), JSON.stringify({ nonce: 'abandoned', created_at: created, pid: 1 }));
+    }
+    assert.match(json(await m.run(['telemetry', 'status', '--json'])).send_lock, /stale/, kind);
+    await m.run(['--version']);
+    await m.settle().catch(error => { throw new Error(`${kind}: ${error.message}; lock now ${existsSync(m.lock) ? readdirSync(m.lock).join(',') : 'gone'}`); });
+    assert.equal(usagePosts(m).length, 1, `${kind}: the lock stopped the send`);
+  }
   const m = machine(t);
   await m.run(['--version']);
-  m.age();
-  await Promise.all(Array.from({ length: 6 }, (_, i) => m.run(i % 2 ? ['--version'] : ['stacks', '--json'])));
+  m.advance(25);
+  mkdirSync(m.lock, { recursive: true });
+  writeFileSync(join(m.lock, 'owner.json'), JSON.stringify({ nonce: 'live', created_at: START + 25 * 3_600_000, pid: process.pid }));
+  await m.run(['--version']);
+  assert.deepEqual(usagePosts(m), [], 'a live lock was taken');
+  assert.match(json(await m.run(['telemetry', 'status', '--json'])).send_lock, /held/);
+});
+
+// --- USE-1-12 -------------------------------------------------------------------
+test('USE-1-12: eight commands started together when a document is due send one, whatever the file times say', async t => {
+  // Every process's clock is months away from the file system's clock here.
+  const m = machine(t);
+  await m.run(['--version']);
+  m.advance(25);
+  await Promise.all(Array.from({ length: 8 }, (_, i) => m.run(i % 2 ? ['--version'] : ['stacks', '--json'])));
   await m.settle();
   assert.equal(usagePosts(m).length, 1);
 });
 
+// --- F8, F10, F15 and the limits ------------------------------------------------
+test('F8: reset makes a new identifier at the next document without adding a document to the day', async t => {
+  const m = machine(t);
+  await m.run(['--version']);
+  m.advance(25);
+  await m.run(['--version']);
+  await m.settle();
+  const first = JSON.parse(usagePosts(m)[0].body).install;
+  for (let i = 0; i < 3; i++) {
+    assert.equal(json(await m.run(['telemetry', 'reset', '--json'])).install, 'made at the next send');
+    await m.run(['stacks', '--json']);
+    await m.settle();
+  }
+  assert.equal(usagePosts(m).length, 1, 'reset bought another document the same day');
+  m.advance(24);
+  await m.run(['--version']);
+  await m.settle();
+  const next = JSON.parse(usagePosts(m).at(-1).body);
+  assert.equal(usagePosts(m).length, 2);
+  assert.notEqual(next.install, first);
+  assert.equal(next.since, null);
+});
+
+test('A8/F10: receipts keep the last 30 and say whether each was delivered', async t => {
+  const m = machine(t);
+  await m.run(['--version']);
+  mkdirSync(m.sent, { recursive: true });
+  for (let i = 0; i < 35; i++) writeFileSync(join(m.sent, `20260101T0000${String(i).padStart(2, '0')}Z-0000000${i % 10}.delivered.json`), '{}');
+  m.advance(25);
+  m.setMode('500');
+  await m.run(['--version']);
+  await m.settle();
+  assert.ok(readdirSync(m.sent).length <= 30, `${readdirSync(m.sent).length} receipts kept`);
+  const shown = await show(m);
+  assert.equal(shown.last_attempt.outcome, 'not-delivered');
+  assert.equal(shown.last_attempt.body, usagePosts(m)[0].body);
+  assert.equal(shown.last_delivered.body, '{}', 'the failed attempt was reported as the last delivery');
+});
+
+test('A9: counts clamp at 10,000, and features beyond 64 or 2,048 bytes wait for the next document', async t => {
+  const m = machine(t);
+  await m.run(['--version']);
+  const names = JSON.parse(readFileSync(join(ROOT, 'lib/usage-features.json'), 'utf8'));
+  const lines = [...Array.from({ length: 10_005 }, () => '{"f":"stacks"}'), ...Array.from({ length: 1_000_003 }, () => '{"a":1}'),
+    ...names.map(name => JSON.stringify({ f: name }))];
+  writeFileSync(m.counts, lines.join('\n') + '\n');
+  m.advance(25);
+  await m.run(['--help']);
+  await m.settle();
+  const first = JSON.parse(usagePosts(m)[0].body);
+  assert.deepEqual(validate(SCHEMA, first), []);
+  assert.equal(first.features.stacks, 10_000);
+  assert.equal(first.api_calls, 1_000_000);
+  assert.ok(Object.keys(first.features).length <= 64 && Buffer.byteLength(usagePosts(m)[0].body) <= 2048);
+  m.advance(24);
+  await m.run(['--help']);
+  await m.settle();
+  const second = JSON.parse(usagePosts(m)[1].body);
+  assert.deepEqual(validate(SCHEMA, second), []);
+  const sent = new Set([...Object.keys(first.features), ...Object.keys(second.features)]);
+  for (const name of names) assert.ok(sent.has(name), `${name} was dropped instead of waiting`);
+});
+
+// --- A16 -------------------------------------------------------------------------
+test('A16: lib/usage-features.json is the one sorted list of names, pinned, shipped and equal to what is counted', () => {
+  const bytes = readFileSync(join(ROOT, 'lib/usage-features.json'));
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), 'de500569c131717a620ad08e9c974a347bf2e7ad34b28df1845b08ce5eb08771');
+  const names = JSON.parse(bytes);
+  assert.ok(Array.isArray(names) && names.every(name => typeof name === 'string' && /^[a-z][a-z0-9_]{0,31}$/.test(name)));
+  assert.deepEqual(names, [...new Set(names)].sort());
+  const mcpNames = [TOOL_NAME, SAVED_REQUEST_TOOL.name, WORKBENCH_AGENT_TOOL.name, NOTE_REVIEW_TOOL.name, NOTE_RETIRE_TOOL.name,
+    NOTE_CONTEXT_TOOL.name, 'api_context', 'api_context_record'].map(name => `mcp_${name}`);
+  assert.deepEqual(names, [...new Set([...cliFeatureNames(), ...mcpNames])].sort());
+  const inventory = JSON.parse(readFileSync(join(ROOT, 'packaging/public-source-files.json'), 'utf8')).files;
+  assert.ok(inventory.includes('lib/usage-features.json'));
+  assert.match(readFileSync(join(ROOT, 'docs/telemetry.md'), 'utf8'), /lib\/usage-features\.json/);
+});
+
 // --- USE-1-13 -------------------------------------------------------------------
-test('USE-1-13: the contract is pinned, the destination is documented, the notice says what it must, no retired phrase ships', async t => {
+test('USE-1-13: the contract is pinned, the destination is documented, the notice says what it must, the words are exact', async t => {
   assert.equal(createHash('sha256').update(readFileSync(join(ROOT, 'lib/usage.schema.json'))).digest('hex'),
     'b326dd62c8bf63c5ac787a178e8c562e80c91d7dbe6214bd24181e12853fe3a5');
   assert.ok(readFileSync(join(ROOT, 'docs/network-behavior.md'), 'utf8').includes(USAGE_URL));
   const m = machine(t);
   const notice = (await m.run(['--version'])).stderr.trim();
-  for (const required of [/telemetry/, /random install ID/, /version/, /operating system/, /each .* command ran/, /API calls/,
-    /Nothing about your repositories, APIs or requests is sent/, /on unless you turn it off/, /telemetry off`/, /"opt out"/,
+  for (const required of [/telemetry/, /random install ID/, /linked to the next/, /version/, /operating system/, /each .* command and MCP tool ran/,
+    /API calls/, /Nothing about your repositories, APIs or requests is sent/, /on unless you turn it off/, /telemetry off`/, /"opt out"/,
     /telemetry show` prints exactly what is sent/, /24 hours/]) assert.match(notice, required);
-  assert.doesNotMatch(notice, /\bjust\b|only a little/i);
+  assert.doesNotMatch(notice, /\bjust\b|only a little|anonymous/i);
   assert.equal(notice.split('\n').length, 1, 'the notice is one paragraph');
 
   const retired = [/no telemetry/i, /nothing phones home/i, /never phones home/i, /only thing it sends us is feedback/i,
-    /only thing [^.]* sends us is feedback/i, /no sannr server/i, /only thing it will ever send/i];
+    /only thing [^.]* sends us is feedback/i, /no sannr server/i, /only thing it will ever send/i,
+    /before it has told you/i, /stores no IP address/i, /no (?:setting, )?environment variable[^.]*changes/i];
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
   const inventory = JSON.parse(readFileSync(join(ROOT, 'packaging/public-source-files.json'), 'utf8')).files;
   const shipped = new Set(inventory.filter(path => !path.startsWith('test/') && /\.(md|mjs|json|yml|txt)$/.test(path)));
@@ -517,6 +740,10 @@ test('USE-1-13: the contract is pinned, the destination is documented, the notic
   for (const path of shipped) {
     if (!existsSync(join(ROOT, path))) continue;
     const text = readFileSync(join(ROOT, path), 'utf8');
-    for (const phrase of retired) assert.doesNotMatch(text, phrase, `${path} still makes the retired promise`);
+    for (const phrase of retired) assert.doesNotMatch(text, phrase, `${path} still makes a retired or overstated promise`);
+    // "Anonymous" only where the same paragraph says the identifier links days.
+    if (path.endsWith('.md')) for (const paragraph of text.split(/\n\s*\n/))
+      if (/anonymous/i.test(paragraph) && /usage|telemetry/i.test(paragraph))
+        assert.match(paragraph, /link/i, `${path}: "anonymous" without saying the identifier links days: ${paragraph.slice(0, 120)}`);
   }
 });
