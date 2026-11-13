@@ -35,18 +35,21 @@ Install dependencies once per checkout (and after lockfile changes):
 npm ci --ignore-scripts --no-audit --no-fund
 ```
 
-Usage counts ([docs/telemetry.md](docs/telemetry.md)) are off in a source
-checkout and in any test run (`NODE_TEST_CONTEXT`, `VITEST` or `JEST_WORKER_ID`
-set): running the CLI, the MCP server, a packed copy or a test file from this
-repository counts nothing, sends nothing and creates no state file for usage
-counts. The test runner (`npm test`, `npm run test:full`) gives every test
-process its own temporary home, state directory, usage log and npm cache, with
-usage counts off. A test file that starts the CLI, the MCP server or a packed
-copy, or imports code that touches machine state, imports
-`test/helpers/isolated-home.mjs` first, which does the same when the file is
-run directly; `test/test-isolation.test.mjs` fails for any such file that does
-not. Only `test/telemetry.test.mjs` turns usage counts on, in its own temporary
-`SANNR_HOME` and `HOME` with every request intercepted.
+Usage counts ([docs/telemetry.md](docs/telemetry.md)) are off in a source tree
+of this repository, with or without `.git` (a package root that holds `.git`,
+`scripts/test-unit.mjs` or `test/telemetry.test.mjs`), and in any process a
+test runner marks. The test runner (`npm test`, `npm run test:full`) gives
+every test process its own temporary home, state directory, usage log and npm
+cache, with usage counts off. Every test file imports
+`test/helpers/isolated-home.mjs` first (`test/test-isolation.test.mjs` fails
+for one that does not); it does the same for a file run directly, and gives
+every process the test starts with an environment built by hand the same
+home and off switch unless the test set them itself. So running the CLI, the
+MCP server, a packed copy or a test file from this repository, by the runner
+or directly, counts nothing, sends nothing and leaves nothing in the home or
+state directory it inherited. Only `test/telemetry.test.mjs` turns usage
+counts on, in its own temporary `SANNR_HOME` and `HOME` with every request
+intercepted.
 
 For a small code change, run its affected tests, then the fast safety check
 before handoff. For example, an environment-selection fix:

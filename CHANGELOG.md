@@ -22,12 +22,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   result), and the first document waits 24 hours after it. `sannr telemetry
   off` (or telling the agent "opt out") writes an off marker that holds for
   every Sannr process run with the same home directory until `telemetry on`,
-  never waits for a send in progress, and sends nothing; `SANNR_TELEMETRY=0`,
-  `DO_NOT_TRACK=1`, CI environments, test runs (`NODE_TEST_CONTEXT`, `VITEST`,
-  `JEST_WORKER_ID`), a source checkout of Sannr and any `--dry-run` turn it off
-  per process, and a command run with `--offline` starts no send. When off
-  cannot be recorded for the user, `telemetry off` says where it did hold and
-  exits 1. New `sannr telemetry` command:
+  marks every other state directory used with that home at once, never waits
+  for a send in progress, and sends nothing (a document being prepared or on
+  its way may still go out within a few seconds); `SANNR_TELEMETRY=0`,
+  `DO_NOT_TRACK=1`, CI environments, processes a test runner marks
+  (`NODE_TEST_CONTEXT`, `VITEST`, `JEST_WORKER_ID`), a source tree of Sannr
+  (with or without `.git`) and any `--dry-run` turn it off per process, and a command run with `--offline` starts no send. When off
+  cannot be recorded for the home directory, `telemetry off` says where it did
+  hold and exits 1. New `sannr telemetry` command:
   `status`, `show` (the exact next document), `off`, `on`, `reset`. A detached
   process sends it, so no command waits for it or changes its output or exit
   code. The install prompt, README, privacy, network behavior, feedback and

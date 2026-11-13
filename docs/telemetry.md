@@ -76,7 +76,10 @@ as any of its rows.
   printed, nothing is counted and no identifier exists. Sannr cannot know
   whether anyone read it.
 - **A day later.** The first document is sent no earlier than 24 hours after
-  the notice. If you turn it off within that day, nothing is ever sent.
+  the notice, measured by this machine's clock: a process whose clock was
+  wrong when the notice was recorded (a container or virtual machine sharing
+  the home directory, for example) can shorten that wait. If you turn it off
+  within that day, nothing is ever sent.
 - **At most one document per UTC day by this machine's clock, per state
   directory:** a machine whose processes use several state directories (for
   example a `SANNR_HOME` pinned in an MCP registration) can send one from each, whatever the identifier: `telemetry off`, `on` and `reset` keep
@@ -120,8 +123,10 @@ Each command accepts `--json`.
   command (the install prompt, the pointer block `connect` writes into
   `AGENTS.md` and `CLAUDE.md`, and the request skill all say so). Off is a small
   marker file, `telemetry.off`, written at once in the state directory the
-  command uses and in the default one of its home directory (`~/.sannr`); it
-  never waits for a send in progress. Every Sannr process run with that home
+  command uses, in the default one of its home directory (`~/.sannr`), and in
+  every other state directory that has been used with that home (each records
+  itself in `~/.sannr/telemetry.dirs` when first used); it never waits for a
+  send in progress. Every Sannr process run with that home
   directory checks it before anything else, whatever `SANNR_HOME` it has, and
   nothing but `telemetry on` removes it. A process run with another home
   directory (another account, `sudo`, or a container or sandbox with its own
@@ -129,38 +134,44 @@ Each command accepts `--json`.
   documents (they contain the identifier) are deleted at once where no send
   holds them, and otherwise before that state directory counts or sends again;
   they are never sent. It stays off across upgrades and reinstalls. Turning it
-  off sends nothing; a document whose request had already started may still
-  arrive. If off cannot be recorded in `~/.sannr` (the location is not a
+  off sends nothing; a document that was being prepared or was already on its
+  way when you turned it off may still go out within a few seconds. If off cannot be recorded in `~/.sannr` (the location is not a
   writable directory), `telemetry off` says that off holds only for the
   directory it could write, and exits with status 1; set `SANNR_TELEMETRY=0`
   or `DO_NOT_TRACK=1` for every Sannr process instead.
 - A marker or a home record that exists and cannot be read means off, and
-  `telemetry status` says which file. A state directory that has seen its
-  home's off keeps a copy of the marker, so losing `~/.sannr` later does not
-  turn it back on; a later `telemetry on` for the home lifts that copy.
+  `telemetry status` says which file. Every state directory recorded with the
+  home holds its own copy of the marker, so losing or moving `~/.sannr` later,
+  or running with another `HOME`, does not turn any of them back on; a later
+  `telemetry on` for the home lifts those copies. A state directory first used
+  after `~/.sannr` was lost, and never recorded with it, has no copy.
 - For one process or environment: `SANNR_TELEMETRY=0` (also `off`, `false` or
   `no`), or `DO_NOT_TRACK=1`. A CI environment is off automatically: `CI` set
   to anything but `0` or `false`, or any of `GITHUB_ACTIONS`, `GITLAB_CI`,
   `BUILDKITE`, `CIRCLECI`, `JENKINS_URL`, `TF_BUILD`, `TEAMCITY_VERSION`. In
   such a process nothing is counted, no identifier is made, nothing is sent,
   no notice is shown, and no command other than `telemetry` writes the
-  telemetry state. The same holds inside a test run when `NODE_TEST_CONTEXT`,
-  `VITEST` or `JEST_WORKER_ID` is set; other test runners (Mocha, AVA, tap, Bun,
-  Deno) set none of these, so set `SANNR_TELEMETRY=0` there.
-- A source checkout of Sannr (a `.git` directory or worktree file at the
-  package root) never counts or sends, so contributors' and agents' test runs
-  stay out of the numbers. A published package has no `.git`; a ZIP download or
-  a vendored copy of the source cannot be told from one.
+  telemetry state. The same holds for a process that a test runner marks
+  (`NODE_TEST_CONTEXT`, `VITEST` or `JEST_WORKER_ID` set); other test runners
+  (Mocha, AVA, tap, Bun, Deno) set none of these, so set `SANNR_TELEMETRY=0`
+  there.
+- A source tree of Sannr never counts or sends, so contributors' and agents'
+  runs stay out of the numbers. A source tree is a package root that holds
+  `.git` (a directory or a worktree file), the repository's test runner
+  `scripts/test-unit.mjs`, or its test suite `test/telemetry.test.mjs`, so a
+  ZIP download or an archive of the repository counts as one. The published
+  package ships none of these.
 - `sannr telemetry reset` deletes the identifier; a new one is made at the next
   document. It adds no document to the day: if one was sent today from that
   state directory, the next waits for the next UTC day. When there is no
   identifier yet, it says so and changes nothing.
 - `sannr telemetry on` removes the marker of its state directory, starts that
-  directory with a new identifier and no earlier counts, and lifts the off
-  recorded in `~/.sannr`, so every process run with that home directory can
-  count again. A state directory where `telemetry off` itself was run stays off
-  until `telemetry on` is run with it; `on` names any it knows of. It says what
-  it lifted.
+  directory with a new identifier and no earlier counts, lifts the off
+  recorded in `~/.sannr`, and lifts the copies off put in the other recorded
+  state directories. A state directory where `telemetry off` itself was run
+  stays off until `telemetry on` is run with it, and `on` names every such
+  directory it finds, as well as any whose copy it could not remove; it says
+  processes can count again only with those exceptions.
 
 ## Where it lives
 

@@ -105,10 +105,12 @@ code because of it; a failed send is retried by a later command, at most three
 attempts a day.
 
 Nothing is counted or sent with `SANNR_TELEMETRY=0`, `DO_NOT_TRACK=1`, in a CI
-environment or test run, from a source checkout, in a `--dry-run`, before
-the notice, or after `telemetry off`, which turns it off for every state
-directory used by processes with the same home directory until `telemetry on` and sends nothing (a
-request already under way may still arrive). A command run with `--offline`
+environment, in a process a test runner marks (`NODE_TEST_CONTEXT`, `VITEST`,
+`JEST_WORKER_ID`), from a source tree of Sannr (with or without `.git`), in a
+`--dry-run`, before the notice, or after `telemetry off`, which turns it off
+for every state directory used by processes with the same home directory until
+`telemetry on` and sends nothing (a document that was being prepared or was
+already on its way may still go out within a few seconds). A command run with `--offline`
 starts no send. `telemetry show` prints the exact next document. See
 [telemetry](telemetry.md).
 

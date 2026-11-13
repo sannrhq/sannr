@@ -49,16 +49,14 @@ process is in [CONTRIBUTING.md](CONTRIBUTING.md).
   nothing else: names from `lib/usage-features.json`, counts, an API call
   count, version, platform and a random install identifier. Never add a field,
   a name taken from input, or an endpoint setting; `telemetry off`,
-  `SANNR_TELEMETRY=0`, `DO_NOT_TRACK=1` and CI stop it. A source checkout of
-  this repository and any test run (`NODE_TEST_CONTEXT`, `VITEST`,
-  `JEST_WORKER_ID`) never count or send: running the CLI, a packed copy or a
-  test file from here (`node --test test/<file>`) creates no state file for
-  usage counts. The test runner gives every test process its own home, state
-  directory and usage log, and every test file that starts the CLI, the server
-  or a packed copy, or touches machine state, imports
+  `SANNR_TELEMETRY=0`, `DO_NOT_TRACK=1` and CI stop it. A source tree of this
+  repository, with or without `.git`, and any process a test runner marks
+  never count or send. The test runner gives every test process its own home,
+  state directory and usage log; every test file imports
   `test/helpers/isolated-home.mjs` first (`test/test-isolation.test.mjs`
-  enforces it); only `test/telemetry.test.mjs`
-  turns counting on, removing the test-run mark and naming this checkout in
+  fails for one that does not), which also gives every process a test starts
+  with a hand-built environment the isolated home and the off switch. Only
+  `test/telemetry.test.mjs` turns counting on, naming this checkout in
   `SANNR_TELEMETRY_CHECKOUT`, with an isolated `SANNR_HOME` and `HOME`. Requests otherwise go only to
   the API being called, and `doctor` announces its one probe before sending
   it. Keep all of this true. See [docs/feedback.md](docs/feedback.md).
