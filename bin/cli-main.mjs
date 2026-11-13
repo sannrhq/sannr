@@ -35,6 +35,7 @@ import { parseAuthReference } from "../lib/auth-reference.mjs";
 import {
   PRODUCT, CLI_NAME, MCP_SERVER_KEY, LEGACY_MCP_SERVER_KEYS, LEGACY_SKILL_NAMES, POINTER_BEGIN, POINTER_END, HOME_ENV_NAME, NPM_PACKAGE,
   CI_TARBALL_BASENAME, CI_WORKFLOW_BASENAME, GRAPH_MANIFEST_BASENAME, FEEDBACK_STACK_NAME, CONTEXT_BASENAME,
+  TELEMETRY_ENV_NAME, PROSE_PRODUCT_TITLE,
 } from "../lib/brand.mjs";
 import { loadRegistry, saveRegistry, registerRepo, resolveRef, registryPath,
   grant as addGrant, revoke as dropGrant, crossLookup } from "../lib/registry.mjs";
@@ -5740,17 +5741,35 @@ function cmdTelemetry(argv) {
   try {
     if (sub === "off") {
       const value = telemetryOff();
-      print(value, `Telemetry is off for this operating-system user, until ${CLI_NAME} telemetry on. Turning it off sent nothing; a document already on its way may still arrive.${value.removed.length ? ` Removed: ${value.removed.join(", ")}.` : ""}${value.problem ? ` ${value.problem.message}` : ""}`);
+      const tail = " Turning it off sent nothing; a document already on its way may still arrive.";
+      let human;
+      if (value.scope === "user") {
+        human = `Telemetry is off for this operating-system user, recorded in ${value.user_state_file}${value.recorded.here && value.state_file !== value.user_state_file ? ` and in ${value.state_file}` : ""}. ` +
+          `Every ${PROSE_PRODUCT_TITLE} state directory of this user stops counting and sending, and any identifier or unsent counts left in one are discarded the next time it is used. ` +
+          `It stays off until ${CLI_NAME} telemetry on.${tail}${value.removed.length ? ` Removed: ${value.removed.join(", ")}.` : ""}` +
+          (value.here_problem ? ` Off could not also be written in ${value.state_file} (${value.here_problem.message}); the record for the user covers it.` : "");
+      } else if (value.scope === "directory") {
+        human = `Telemetry is off only for ${value.state_file}. It could not be recorded for this user in ${value.user_state_file} (${value.user_problem.message}), ` +
+          `so other ${PROSE_PRODUCT_TITLE} state directories of this user can still count and send. To turn it off everywhere, make that location writable and run ${CLI_NAME} telemetry off again, ` +
+          `or set ${TELEMETRY_ENV_NAME}=0 or DO_NOT_TRACK=1 in the environment of every ${PROSE_PRODUCT_TITLE} process.${tail}`;
+      } else {
+        human = `Telemetry could not be turned off: neither ${value.state_file} (${value.here_problem.message}) nor ${value.user_state_file} (${value.user_problem?.message ?? value.here_problem.message}) could be written. ` +
+          `Set ${TELEMETRY_ENV_NAME}=0 or DO_NOT_TRACK=1 in the environment of every ${PROSE_PRODUCT_TITLE} process, or fix those locations and run ${CLI_NAME} telemetry off again. Nothing was sent.`;
+      }
+      print(value, human);
+      if (!value.ok) process.exitCode = 1;
     } else if (sub === "on") {
       const value = telemetryOn();
-      print(value, [`Telemetry is on.${value.overridden_by ? ` ${value.overridden_by.variable} still turns it off in this environment.` : ""}`, ...(value.notice ? [value.notice] : [])].join("\n"));
+      print(value, [`Telemetry is on for ${value.state_file}; this directory starts with a new identifier at its next document, and no earlier counts are kept.` +
+        (value.user_off_lifted ? ` The off recorded for this operating-system user in ${value.user_state_file} is lifted, so every ${PROSE_PRODUCT_TITLE} state directory of this user can count again, except one where off was recorded itself: run telemetry on with that directory to lift it.` : "") +
+        (value.overridden_by ? ` ${value.overridden_by.variable ?? "This environment"} still turns it off here.` : ""), ...(value.notice ? [value.notice] : [])].join("\n"));
     } else {
       const value = telemetryReset();
-      print(value, "A new install identifier will be made at the next send; the old one is deleted.");
+      print(value, "A new install identifier will be made at the next document; the old one is deleted. This adds no document to the day.");
     }
   } catch (error) {
     die(typeof error.code === "string" && error.code.startsWith("TELEMETRY_") ? error.code : "TELEMETRY_STATE_UNWRITABLE",
-      "The telemetry state could not be written; nothing was sent.", `Check the machine state directory, then retry ${CLI_NAME} telemetry ${sub}.`);
+      error.code === "TELEMETRY_STATE_BUSY" ? error.message : "The telemetry state could not be written; nothing was sent.", `Check the machine state directory, then retry ${CLI_NAME} telemetry ${sub}.`);
   }
 }
 
