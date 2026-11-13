@@ -60,7 +60,8 @@ function viaClient(cases) {
   return new Promise((resolve) => {
     const child = spawn("node", ["server.mjs"], {
       cwd: ROOT,
-      env: { ...process.env, API_BASE_URL: BASE, API_USAGE_LOG: "/dev/null",
+      // DO_NOT_TRACK: no harness run may count usage or touch machine telemetry state.
+      env: { ...process.env, DO_NOT_TRACK: "1", API_BASE_URL: BASE, API_USAGE_LOG: "/dev/null",
              API_CONTEXT_OFF: "1", API_EVIDENCE: ("/" + "tmp/truthful-evidence"), API_CONCURRENCY: "2" },
       stdio: ["pipe", "pipe", "ignore"],
     });

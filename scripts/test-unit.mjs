@@ -5,8 +5,10 @@ import { spawn } from 'node:child_process';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { TELEMETRY_ENV_NAME } from '../lib/brand.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+export const TELEMETRY_OFF = Object.freeze({ [TELEMETRY_ENV_NAME]: '0', DO_NOT_TRACK: '1' });
 const COUNT_KEYS = ['tests', 'suites', 'pass', 'fail', 'cancelled', 'skipped', 'todo'];
 // This reviewed inventory already owns the product/research boundary. Reuse it
 // rather than maintaining a second list that can drift. Keep the original test
@@ -67,8 +69,11 @@ function executePhase(phase, { root, write }) {
   return new Promise(resolveResult => {
     // Node 22 also applies this to the file wrapper. A serial feedback fixture
     // can exceed one minute on hosted Windows; retain a finite per-file cap.
+    // Usage counts are off for every test process and everything it spawns
+    // with an inherited environment; telemetry tests turn them on explicitly
+    // inside an isolated machine state directory.
     const child = spawn(process.execPath, ['--test', '--test-timeout=180000', '--test-reporter=tap', ...phase.files],
-      { cwd: root, stdio: ['inherit', 'pipe', 'inherit'] });
+      { cwd: root, stdio: ['inherit', 'pipe', 'inherit'], env: { ...process.env, ...TELEMETRY_OFF } });
     const counts = {};
     let pending = '';
     const line = text => {

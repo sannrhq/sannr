@@ -189,7 +189,7 @@ test("egress lists configured destinations and the dynamic redirect class", () =
   assert.match(m.egress.note, /credentials.*dropped/i);
   // The manifest must not invent a destination beyond the egress classes.
   assert.deepEqual(new Set(Object.keys(m.egress)),
-    new Set(["base_url", "hosts", "oauth_token_urls", "redirect_destinations", "note", "feedback"]));
+    new Set(["base_url", "hosts", "oauth_token_urls", "redirect_destinations", "note", "feedback", "usage"]));
 });
 
 test("with no OAuth configured no token URL is fabricated", () => {

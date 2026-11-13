@@ -99,6 +99,7 @@ function requireStackMigrationBeforeWriting(root) {
   if (refusal) die(refusal.code, refusal.message, refusal.command);
 }
 
+import { cliStart, takeConnectNotice, telemetryStatus, telemetryShow, telemetryOff, telemetryOn, telemetryReset, renderStatus, renderShow } from '../lib/telemetry.mjs';
 import { LAYOUT, LEGACY_LAYOUT, layoutFor, planLayout, ensureLayout, inspectLayoutReadme, legacyLayoutEntries, migrateLayout, projectedLayoutFiles } from "../lib/layout.mjs";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -1474,6 +1475,10 @@ async function cmdConnect(argv, { silent = false, selectedContract, createdStack
   process.exitCode = conflicts ? 1 : 0;
   if (silent) return report;
 
+  // The first time Sannr runs on a machine through connect, the telemetry
+  // notice is part of what connect prints, for the agent to relay.
+  const telemetryNotice = takeConnectNotice();
+  if (telemetryNotice) report.telemetry_notice = telemetryNotice;
   if (asJson) console.log(JSON.stringify(report, null, 1));
   else {
     const out = [`${localCli} connect — ${root}${dryRun ? "  (dry run: nothing written)" : ""}\n`];
@@ -1547,6 +1552,7 @@ async function cmdConnect(argv, { silent = false, selectedContract, createdStack
       out.push(`  ${row.action.padEnd(9)} ${terminalText(row.path)}`);
     out.push("", `  ${report.note}`, ...(report.powershell ? [`  ${report.powershell}`] : []), "", renderSetupReceipt(report.setup));
     if (conflicts) out.push(report.next);
+    if (telemetryNotice) out.push("", telemetryNotice);
     console.log(out.join("\n"));
   }
   // exitCode, not exit(): the process ends when the event loop drains, so a
@@ -5626,6 +5632,8 @@ const HELP = {
              example: `${CLI_NAME} prune "GET /legacy" "GET /old" --dry-run` },
   unwire:  { blurb: "undo connect: remove its registrations, skills, pointer block, and exact generated CI artifacts",
              example: `${CLI_NAME} unwire` },
+  telemetry: { blurb: "anonymous daily usage counts: status, show (the exact document), off, on, reset; off is for good",
+             example: `${CLI_NAME} telemetry off` },
   start:   { blurb: "set up your coding agent, inventory local APIs without requests, and prepare the next task",
              example: `${CLI_NAME} start` },
   mcp:     { blurb: "enumerate MCP declarations by default; tool calls require per-tool opt-in and a read-only claim or unsafe override",
@@ -5716,12 +5724,47 @@ function printCommandHelp(name) {
   console.log(`${CLI_NAME} ${name} — ${h.blurb}\n\n  EXAMPLE: ${h.example}${detail}\n\n${EXIT_CODES}`);
 }
 
+// --- telemetry ---------------------------------------------------------------
+//
+// The anonymous daily usage document (lib/telemetry.mjs, docs/telemetry.md).
+// None of these subcommands is counted, and none sends anything.
+function cmdTelemetry(argv) {
+  const json = argv.includes("--json");
+  const rest = argv.slice(1).filter(arg => arg !== "--json");
+  const sub = rest[0] ?? "status";
+  if (rest.length > 1 || !["status", "show", "off", "on", "reset"].includes(sub))
+    die("TELEMETRY_ARGUMENT_INVALID", "Use telemetry status, show, off, on or reset, each with optional --json.", `${CLI_NAME} telemetry status`);
+  const print = (value, human) => console.log(json ? JSON.stringify(value, null, 1) : human);
+  if (sub === "status") { const value = telemetryStatus(); print(value, renderStatus(value)); return; }
+  if (sub === "show") { const value = telemetryShow(); print(value, renderShow(value)); return; }
+  try {
+    if (sub === "off") {
+      const value = telemetryOff();
+      print(value, `Telemetry is off for this machine, for good, until ${CLI_NAME} telemetry on. Nothing was sent.${value.removed.length ? ` Removed: ${value.removed.join(", ")}.` : ""}`);
+    } else if (sub === "on") {
+      const value = telemetryOn();
+      print(value, [`Telemetry is on.${value.overridden_by ? ` ${value.overridden_by.variable} still turns it off in this environment.` : ""}`, ...(value.notice ? [value.notice] : [])].join("\n"));
+    } else {
+      const value = telemetryReset();
+      print(value, "A new install identifier will be made at the next send; the old one is deleted.");
+    }
+  } catch (error) {
+    die(typeof error.code === "string" && error.code.startsWith("TELEMETRY_") ? error.code : "TELEMETRY_STATE_UNWRITABLE",
+      "The telemetry state could not be written; nothing was sent.", `Check the machine state directory, then retry ${CLI_NAME} telemetry ${sub}.`);
+  }
+}
+
 // --- entry -----------------------------------------------------------------
 
 const argv = process.argv.slice(2);
 const requestedCommand = argv[0];
 const doctorAliases = new Set(["status", "check", "health", "ping"]);
 const command = doctorAliases.has(requestedCommand) ? "doctor" : requestedCommand;
+
+// Anonymous usage counts (docs/telemetry.md): the one-time notice on stderr,
+// this run's count and, when one is due, a detached send. Synchronous local
+// file work only; it never changes stdout or the exit code.
+cliStart(argv);
 
 // stderr preserves doctor's stdout byte-for-byte — especially its JSON — while
 // making the guessed verb's redirection explicit rather than silently behaving
@@ -5812,6 +5855,7 @@ else if (command === "feedback") await cmdFeedback(argv);
 else if (command === "review") cmdReview(argv);
 else if (command === "prune") cmdPrune(argv);
 else if (command === "unwire" || command === "disconnect") await cmdUnwire(argv);
+else if (command === "telemetry") cmdTelemetry(argv);
 else {
   // A bare invocation prints help and SUCCEEDS (0); an unknown command prints
   // help but is a usage error (non-zero), so a typo is caught by a script.

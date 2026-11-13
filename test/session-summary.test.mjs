@@ -48,7 +48,7 @@ function project(t) {
   writeFileSync(join(dir, 'stack.json'), JSON.stringify({ v: 1, name: 'alpha', default_environment: 'local', contract: 'openapi.json',
     environments: { local: { baseUrl: `${origin}/alpha`, auth: 'bearer:SUMMARY_TEST_TOKEN' } } }));
   writeFileSync(join(dir, CONTEXT_BASENAME), JSON.stringify({ v: 0, api: { name: 'alpha' }, operations: {} }));
-  const env = { PATH: process.env.PATH, HOME: join(root, 'home'), [HOME_ENV_NAME]: join(root, 'home', 'machine'), TZ: 'UTC', NO_COLOR: '1',
+  const env = { PATH: process.env.PATH, DO_NOT_TRACK: '1', HOME: join(root, 'home'), [HOME_ENV_NAME]: join(root, 'home', 'machine'), TZ: 'UTC', NO_COLOR: '1',
     API_CONTEXT_DIR: root, API_TIMEOUT_MS: '2000', SUMMARY_TEST_TOKEN: TOKEN };
   return { root, env };
 }

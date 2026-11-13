@@ -30,7 +30,7 @@ const writeJson = (path, value, mode) => { mkdirSync(dirname(path), { recursive:
 function project(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'stacks-1b-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const env = { PATH: process.env.PATH, HOME: join(root, 'home'), [HOME_ENV_NAME]: join(root, 'machine'),
+  const env = { PATH: process.env.PATH, DO_NOT_TRACK: '1', HOME: join(root, 'home'), [HOME_ENV_NAME]: join(root, 'machine'),
     API_CONTEXT_DIR: root, API_USAGE_LOG: '', NO_COLOR: '1',
     FIXTURE_ALPHA_TOKEN: secrets[0], FIXTURE_BETA_TOKEN: secrets[1] };
   mkdirSync(env.HOME, { recursive: true });

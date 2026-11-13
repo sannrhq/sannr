@@ -2,7 +2,7 @@
 // npm run check always runs the complete gates, even from an offline-check shell.
 import { spawnSync } from "node:child_process";
 
-const env = { ...process.env };
+const env = { ...process.env, DO_NOT_TRACK: "1" };
 delete env.SANNR_STRESS_LOCAL;
 const npmCli = process.env.npm_execpath;
 if (!npmCli) throw new Error("Run this gate with npm run check");
