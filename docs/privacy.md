@@ -1,7 +1,9 @@
 # Privacy: what Sannr stores, and what leaves your machine
 
-Sannr has no account and no telemetry. It is a local API client with files
-beside your code. This page says where each kind of record lives and which
+Sannr has no account. It is a local API client with files beside your code.
+It sends us one anonymous document a day of usage counts, on unless you turn
+it off and never before it has told you; [telemetry](telemetry.md) says
+exactly what is in it. This page says where each kind of record lives and which
 commands put traffic on the network. The exact destination inventory is in
 [network behavior](network-behavior.md); the feedback payload is in
 [feedback](feedback.md).
@@ -15,6 +17,7 @@ commands put traffic on the network. The exact destination inventory is in
 | `AGENTS.md` and `CLAUDE.md` pointer block (committed) | A summary of each stack and its recorded notes, so agents read them without a command. | Same. |
 | `.sannr/evidence/` (ignored by Git) | Request and response evidence for executed calls, including bodies, with detected credentials masked; the onboarding observation from `doctor`; Workbench settings and handoff inboxes. | This machine only. Masking does not remove all personal data, and Git ignore rules do not protect a folder that is copied or uploaded. |
 | `~/.sannr/` (or `SANNR_HOME`) | A registry of repositories set up on this machine, a usage log of request sizes and outcomes, and cached OAuth tokens when you configure OAuth. Files are mode 0600 in 0700 directories. | This machine only. |
+| `~/.sannr/telemetry.json` and `~/.sannr/telemetry/` (or under `SANNR_HOME`) | The telemetry setting and when its notice was shown; once a document has been sent, a random install identifier; unsent counts per fixed command name and API calls; the last 30 documents sent. Deleted, apart from the off setting, by `telemetry off`. | This machine only. |
 | `.sannr/feedback/` (ignored by Git) | The local feedback report and, under `sent/`, the exact bytes of any report you chose to send. | This machine only. |
 
 The promotion boundary decides what moves from evidence into committed
@@ -32,10 +35,12 @@ free text that you or your agent wrote.
 | Your API calls | `request`, `protocol`, `learn`, `verify`, suite runs, `map --execute`, Workbench **Send request**, and the `api_request` MCP tool. | The stacks and URLs you configure or name, with the credentials those environments reference. OAuth grants go to the configured token URL. Redirects follow the client's credential and method guards. |
 | Postman capture | `postman capture`, explicitly. | `https://api.getpostman.com`, with `POSTMAN_API_KEY` from your environment. Importing an exported file contacts nothing. |
 | Feedback | `feedback --send`, after a human yes (or an explicit `allow` setting). | `https://sannr.dev/api/v1/feedback`: version, platform, host category, aggregate counts and the prose you supply, with names, paths, hostnames and identifiers removed. |
+| Usage counts | At most once a UTC day, from a separate process started by any command or the MCP server, beginning 24 hours after the one-time notice. Off with `telemetry off`, "opt out" to your agent, `SANNR_TELEMETRY=0`, `DO_NOT_TRACK=1` or in CI. | `https://sannr.dev/api/v1/usage`: a random install identifier, the version, operating system family, processor family, Node major version, the previous send date, counts per fixed command name and the number of API calls. Nothing about repositories, APIs or requests. See [telemetry](telemetry.md). |
 
-Nothing else. `connect`, `unwire`, `note`, `show`, `map`, `view`, `survey`,
-`import` of a local file, the Workbench's read-only views and session
-completion send no requests. `lib/feedback.mjs`, which collects the report,
+Nothing else. Apart from the daily usage document above, `connect`, `unwire`,
+`note`, `show`, `map`, `view`, `survey`, `import` of a local file, the
+Workbench's read-only views and session completion send no requests.
+`lib/feedback.mjs`, which collects the report,
 has no network capability; a test asserts it. The Workbench listens on IPv4
 loopback only, on an ephemeral port, and needs a pairing code typed at the
 terminal that launched it.

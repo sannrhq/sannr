@@ -1,8 +1,9 @@
 # Network behavior
 
 Sannr stores API knowledge and execution evidence on your machine and in your
-repo. No account, no telemetry. The only thing it sends us is feedback.
-Feedback is optional and requires an explicit send; see the policy below.
+repo. No account. It sends us two things: one anonymous document a day of
+usage counts, on unless you turn it off (see below and [telemetry](telemetry.md)),
+and feedback, which is optional and requires an explicit send.
 It is an API client: commands that execute requests contact the
 selected APIs. Installation and MCP startup can also involve your package
 manager. These are separate network paths.
@@ -78,6 +79,28 @@ replacement `baseUrl`; the CLI uses the documented Postman root.
 
 Importing an already-exported Postman, Bruno or Insomnia collection is local and
 does not contact Postman. See [imports](imports.md).
+
+## Daily usage counts
+
+Once the one-time notice has been shown on a machine and 24 hours have passed,
+the next command (or the MCP server) sends at most one document a UTC day:
+`POST https://sannr.dev/api/v1/usage` with `content-type: application/json`, a
+user agent of the product name and version, no cookie or authorization, no
+redirect followed and a five-second timeout. The destination is a constant in
+`lib/brand.mjs`; no configuration, environment variable or proxy changes it.
+The body is exactly [`lib/usage.schema.json`](../lib/usage.schema.json): a
+random install identifier, the version, operating system and processor family,
+Node major version, the previous send date, counts per fixed command name and
+the number of API calls, at most 2,048 bytes. The exact bytes are written to
+`~/.sannr/telemetry/sent/` before the request. A separate detached process
+sends it, so no command waits for the network or changes its output or exit
+code because of it; a failed send is retried by a later command, at most three
+attempts a day.
+
+Nothing is counted or sent with `SANNR_TELEMETRY=0`, `DO_NOT_TRACK=1`, in a CI
+environment, before the notice, or after `telemetry off`, which turns it off
+for the machine for good and sends nothing. `telemetry show` prints the exact
+next document. See [telemetry](telemetry.md).
 
 ## Reports, links and audit evidence
 

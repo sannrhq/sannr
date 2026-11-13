@@ -37,15 +37,23 @@ process is in [CONTRIBUTING.md](CONTRIBUTING.md).
   limitations behind any result. Fixture checks do not establish real-world
   accuracy, savings, or superiority. Research is maintained separately and is
   not included in this product repository.
-- **No account, no telemetry.** The only thing Sannr sends us is feedback, which
+- **No account; two things are sent to us, and both are disclosed.** Feedback
   is optional and asks first: a report goes out only through an explicit
   `feedback --send`, which stops for a human yes by default
-  (`feedback.send: ask | allow | never`). Install, requests, schedules and
-  session end send us nothing; requests go only to the API being called, and
-  `doctor` announces its one probe before sending it. Collection stays
-  local: a test asserts `lib/feedback.mjs` has no network capability, and only
-  the API client's pinned feedback path may transmit the report, after writing
-  its receipt. Keep both true. See [docs/feedback.md](docs/feedback.md).
+  (`feedback.send: ask | allow | never`). Collection stays local: a test
+  asserts `lib/feedback.mjs` has no network capability, and only the API
+  client's pinned feedback path may transmit the report, after writing its
+  receipt. The anonymous daily usage document (`lib/telemetry.mjs`,
+  [docs/telemetry.md](docs/telemetry.md)) is on unless turned off, never sent
+  before the one-time notice and 24 hours, exactly `lib/usage.schema.json` and
+  nothing else: fixed command names, counts, an API call count, version,
+  platform and a random install identifier. Never add a field, a name taken
+  from input, or an endpoint override; `telemetry off`, `SANNR_TELEMETRY=0`,
+  `DO_NOT_TRACK=1` and CI stop it. Requests otherwise go only to the API being
+  called, and `doctor` announces its one probe before sending it. Tests must
+  keep telemetry off (the shared runner sets it) unless they turn it on in an
+  isolated `SANNR_HOME`. Keep all of this true. See
+  [docs/feedback.md](docs/feedback.md).
 
 ## Map of the repo
 

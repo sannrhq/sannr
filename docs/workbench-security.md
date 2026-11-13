@@ -117,7 +117,7 @@ Inbox files are private, gitignored and mode 0600, written atomically under a
 per-session lock; damaged or full history is never silently replaced. Reading
 does not acknowledge, and acknowledging means received, not completed. A
 pending notice rides along with the agent's next ordinary tool result; nothing
-wakes a model, calls back remotely or sends telemetry.
+wakes a model or calls back remotely, and the page itself sends nothing to Sannr.
 
 ## Limits and lifetime
 
