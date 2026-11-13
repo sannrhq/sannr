@@ -77,8 +77,9 @@ as any of its rows.
   whether anyone read it.
 - **A day later.** The first document is sent no earlier than 24 hours after
   the notice. If you turn it off within that day, nothing is ever sent.
-- **At most one document per UTC day by this machine's clock,** per state
-  directory, whatever the identifier: `telemetry off`, `on` and `reset` keep
+- **At most one document per UTC day by this machine's clock, per state
+  directory:** a machine whose processes use several state directories (for
+  example a `SANNR_HOME` pinned in an MCP registration) can send one from each, whatever the identifier: `telemetry off`, `on` and `reset` keep
   the record of the day's document, so none of them adds a document to the
   day. When a document is due, the next command (or the MCP server, in the
   background) sends it from a separate process that the command does not wait
@@ -117,40 +118,49 @@ Each command accepts `--json`.
 
 - `sannr telemetry off`, or tell your agent **"opt out"** and it runs that
   command (the install prompt, the pointer block `connect` writes into
-  `AGENTS.md` and `CLAUDE.md`, and the request skill all say so). Off is
-  recorded in the state directory the command uses and in the default one of
-  the home directory it runs under (`~/.sannr`); every process with that home
-  honors it whatever `SANNR_HOME` it has. It deletes the identifier, the unsent
-  counts and the saved documents (they contain the identifier) in those two
-  directories; any other state directory of that home discards its identifier
-  and counts the next time Sannr uses it, and they are never sent. It stays off
-  across upgrades and reinstalls until `sannr telemetry on`. Turning it off
-  sends nothing; a document whose request had already started may still
+  `AGENTS.md` and `CLAUDE.md`, and the request skill all say so). Off is a small
+  marker file, `telemetry.off`, written at once in the state directory the
+  command uses and in the default one of its home directory (`~/.sannr`); it
+  never waits for a send in progress. Every Sannr process run with that home
+  directory checks it before anything else, whatever `SANNR_HOME` it has, and
+  nothing but `telemetry on` removes it. A process run with another home
+  directory (another account, `sudo`, or a container or sandbox with its own
+  `HOME`) keeps its own setting. The identifier, unsent counts and saved
+  documents (they contain the identifier) are deleted at once where no send
+  holds them, and otherwise before that state directory counts or sends again;
+  they are never sent. It stays off across upgrades and reinstalls. Turning it
+  off sends nothing; a document whose request had already started may still
   arrive. If off cannot be recorded in `~/.sannr` (the location is not a
   writable directory), `telemetry off` says that off holds only for the
   directory it could write, and exits with status 1; set `SANNR_TELEMETRY=0`
-  or `DO_NOT_TRACK=1` for every Sannr process instead. A process run under a
-  different home directory has its own `~/.sannr` and its own setting.
+  or `DO_NOT_TRACK=1` for every Sannr process instead.
+- A marker or a home record that exists and cannot be read means off, and
+  `telemetry status` says which file. A state directory that has seen its
+  home's off keeps a copy of the marker, so losing `~/.sannr` later does not
+  turn it back on; a later `telemetry on` for the home lifts that copy.
 - For one process or environment: `SANNR_TELEMETRY=0` (also `off`, `false` or
   `no`), or `DO_NOT_TRACK=1`. A CI environment is off automatically: `CI` set
   to anything but `0` or `false`, or any of `GITHUB_ACTIONS`, `GITLAB_CI`,
   `BUILDKITE`, `CIRCLECI`, `JENKINS_URL`, `TF_BUILD`, `TEAMCITY_VERSION`. In
   such a process nothing is counted, no identifier is made, nothing is sent,
-  no notice is shown and the telemetry state is not written. The same holds
-  inside a test run: when `NODE_TEST_CONTEXT`, `VITEST` or `JEST_WORKER_ID` is
-  set.
+  no notice is shown, and no command other than `telemetry` writes the
+  telemetry state. The same holds inside a test run when `NODE_TEST_CONTEXT`,
+  `VITEST` or `JEST_WORKER_ID` is set; other test runners (Mocha, AVA, tap, Bun,
+  Deno) set none of these, so set `SANNR_TELEMETRY=0` there.
 - A source checkout of Sannr (a `.git` directory or worktree file at the
   package root) never counts or sends, so contributors' and agents' test runs
   stay out of the numbers. A published package has no `.git`; a ZIP download or
   a vendored copy of the source cannot be told from one.
 - `sannr telemetry reset` deletes the identifier; a new one is made at the next
-  document. It adds no document to the day: if one was sent today, the next
-  waits for the next UTC day.
-- `sannr telemetry on` turns it on for its state directory with a new
-  identifier and no earlier counts, and lifts an off recorded in `~/.sannr`, so
-  every state directory of that home can count again, except one where off was
-  recorded itself: run `telemetry on` with that `SANNR_HOME` to lift it. It
-  says what it lifted.
+  document. It adds no document to the day: if one was sent today from that
+  state directory, the next waits for the next UTC day. When there is no
+  identifier yet, it says so and changes nothing.
+- `sannr telemetry on` removes the marker of its state directory, starts that
+  directory with a new identifier and no earlier counts, and lifts the off
+  recorded in `~/.sannr`, so every process run with that home directory can
+  count again. A state directory where `telemetry off` itself was run stays off
+  until `telemetry on` is run with it; `on` names any it knows of. It says what
+  it lifted.
 
 ## Where it lives
 

@@ -20,8 +20,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   or sent until a one-time notice has been printed (in `connect` output, once
   on standard error, or as an extra text block in the MCP server's first tool
   result), and the first document waits 24 hours after it. `sannr telemetry
-  off` (or telling the agent "opt out") turns it off for the operating-system
-  user until `telemetry on`, and sends nothing; `SANNR_TELEMETRY=0`,
+  off` (or telling the agent "opt out") writes an off marker that holds for
+  every Sannr process run with the same home directory until `telemetry on`,
+  never waits for a send in progress, and sends nothing; `SANNR_TELEMETRY=0`,
   `DO_NOT_TRACK=1`, CI environments, test runs (`NODE_TEST_CONTEXT`, `VITEST`,
   `JEST_WORKER_ID`), a source checkout of Sannr and any `--dry-run` turn it off
   per process, and a command run with `--offline` starts no send. When off
@@ -37,9 +38,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   this knowledge is never sent to Sannr" instead of "There's no account and no
   Sannr server", so connected repositories see a one-line change in that
   committed file the next time `connect` or `migrate` refreshes it.
-- `connect`'s closing line now reads "I live in your repo, what I learn about
-  your APIs stays here, and I haven't sent anything anywhere yet" instead of
-  "there's no server on my end, and I haven't phoned anyone yet".
+- `connect`'s closing line now reads "I live in your repo, and what I learn
+  about your APIs stays here; on my own I send only a daily usage count (see
+  telemetry)" instead of "there's no server on my end, and I haven't phoned
+  anyone yet".
+- No released version wrote `telemetry.json` or `telemetry.off`; every record
+  format before this release was a development build, so none is migrated.
 - `view --open` on Windows hands the written page to PowerShell's `Start-Process`,
   the opener the Workbench already used (now shared in `lib/os-open.mjs`), instead
   of explorer.exe, which exits 1 after a successful open and so made every

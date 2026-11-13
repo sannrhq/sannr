@@ -39,11 +39,14 @@ Usage counts ([docs/telemetry.md](docs/telemetry.md)) are off in a source
 checkout and in any test run (`NODE_TEST_CONTEXT`, `VITEST` or `JEST_WORKER_ID`
 set): running the CLI, the MCP server, a packed copy or a test file from this
 repository counts nothing, sends nothing and creates no state file for usage
-counts. The test runner also sets `DO_NOT_TRACK=1`, and every test file that
-runs the CLI, the server or a packed copy imports `test/helpers/isolated-home.mjs`
-first, so it runs under a temporary home. Only `test/telemetry.test.mjs` turns
-usage counts on, in a temporary `SANNR_HOME` and `HOME` with every request
-intercepted; a new test that runs the CLI imports the helper too.
+counts. The test runner (`npm test`, `npm run test:full`) gives every test
+process its own temporary home, state directory, usage log and npm cache, with
+usage counts off. A test file that starts the CLI, the MCP server or a packed
+copy, or imports code that touches machine state, imports
+`test/helpers/isolated-home.mjs` first, which does the same when the file is
+run directly; `test/test-isolation.test.mjs` fails for any such file that does
+not. Only `test/telemetry.test.mjs` turns usage counts on, in its own temporary
+`SANNR_HOME` and `HOME` with every request intercepted.
 
 For a small code change, run its affected tests, then the fast safety check
 before handoff. For example, an environment-selection fix:

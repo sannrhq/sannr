@@ -85,7 +85,7 @@ does not contact Postman. See [imports](imports.md).
 
 Once the one-time notice has been printed on a machine and 24 hours have passed,
 the next command (or the MCP server) sends at most one document per UTC day by
-this machine's clock:
+this machine's clock from each state directory:
 `POST https://sannr.dev/api/v1/usage` with `content-type: application/json`, a
 user agent of the product name and version (plus Node's standard request
 headers), no cookie or authorization, no redirect followed and a five-second
@@ -107,7 +107,7 @@ attempts a day.
 Nothing is counted or sent with `SANNR_TELEMETRY=0`, `DO_NOT_TRACK=1`, in a CI
 environment or test run, from a source checkout, in a `--dry-run`, before
 the notice, or after `telemetry off`, which turns it off for every state
-directory under the same home until `telemetry on` and sends nothing (a
+directory used by processes with the same home directory until `telemetry on` and sends nothing (a
 request already under way may still arrive). A command run with `--offline`
 starts no send. `telemetry show` prints the exact next document. See
 [telemetry](telemetry.md).
