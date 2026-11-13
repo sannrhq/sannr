@@ -76,7 +76,7 @@ export function unitTestPlan(root = ROOT, { safety = false, research = false } =
     .filter(phase => phase.files.length);
 }
 
-function executePhase(phase, { root, write }) {
+export function executePhase(phase, { root, write }) {
   return new Promise(resolveResult => {
     // Node 22 also applies this to the file wrapper. A serial feedback fixture
     // can exceed one minute on hosted Windows; retain a finite per-file cap.

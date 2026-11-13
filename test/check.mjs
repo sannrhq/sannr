@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // npm run check always runs the complete gates, even from an offline-check shell.
+import './helpers/isolated-home.mjs';
 import { spawnSync } from "node:child_process";
 
 const env = { ...process.env, DO_NOT_TRACK: "1" };

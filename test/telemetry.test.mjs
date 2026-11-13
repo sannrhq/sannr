@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, renameSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -98,7 +98,10 @@ globalThis.fetch = async (url, init = {}) => {
 };
 `);
   // The checkout switch names this checkout's own real path: only a test does.
+  // The off switches are named here, empty, so the test helper leaves them
+  // unset in these children on purpose: this file turns counting on.
   const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, [HOME_ENV_NAME]: state, [TELEMETRY_CHECKOUT_ENV_NAME]: ROOT,
+    [TELEMETRY_ENV_NAME]: '', DO_NOT_TRACK: '',
     NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`, NO_COLOR: '1', API_FRICTION_OFF: '1' };
   const m = {
     parent, home, state, root, env,
@@ -396,6 +399,49 @@ test('A17: a source checkout never counts or sends unless a test names the check
     const status = json(await m.run(['telemetry', 'status', '--json'], { env }));
     assert.equal(status.state, 'off');
     assert.equal(status.reason.source, 'checkout');
+  }
+});
+
+test('A17c: a source tree without .git never counts; a packed copy behaves as an installed package', async t => {
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-trees-')));
+  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  // A source copy as a ZIP download or an archive gives it: no .git.
+  const source = join(parent, 'source');
+  for (const entry of ['bin', 'lib', 'skill', 'stacks', 'server.mjs', 'package.json', 'scripts', 'test'])
+    cpSync(join(ROOT, entry), join(source, entry), { recursive: true, filter: from => !from.includes(`${join('test', 'fixtures')}`) });
+  assert.equal(existsSync(join(source, '.git')), false);
+  // The packed copy npm makes from this tree.
+  const packDir = join(parent, 'pack'), packed = join(parent, 'packed');
+  mkdirSync(packDir); mkdirSync(packed);
+  const pack = spawn('npm', ['pack', '--ignore-scripts', '--silent', '--pack-destination', packDir], { cwd: ROOT, stdio: 'ignore' });
+  assert.equal(await new Promise(resolve => pack.once('close', resolve)), 0, 'npm pack failed');
+  const tarball = join(packDir, readdirSync(packDir).find(name => name.endsWith('.tgz')));
+  const untar = spawn('tar', ['-xzf', tarball, '-C', packed], { stdio: 'ignore' });
+  assert.equal(await new Promise(resolve => untar.once('close', resolve)), 0);
+  const packedRoot = join(packed, 'package');
+  assert.equal(existsSync(join(packedRoot, 'test')) || existsSync(join(packedRoot, 'scripts', 'test-unit.mjs')) || existsSync(join(packedRoot, '.git')), false,
+    'the packed copy contains a source-tree marker');
+  for (const [tree, root, counts] of [['source copy', source, false], ['packed copy', packedRoot, true]]) {
+    const m = machine(t);
+    delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+    const cli = join(root, 'bin', 'cli.mjs');
+    const go = args => new Promise(resolve => {
+      const child = spawn(process.execPath, [cli, ...args], { cwd: m.root, env: m.env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '', stderr = '';
+      child.stdout.on('data', c => stdout += c); child.stderr.on('data', c => stderr += c);
+      const timer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+      child.once('close', code => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+    });
+    const first = await go(['--version']);
+    assert.equal(first.code, 0, first.stderr);
+    if (counts) {
+      assert.match(first.stderr, NOTICE, `${tree}: an installed package shows the notice`);
+      assert.ok(existsSync(m.stateFile));
+    } else {
+      assert.doesNotMatch(first.stderr, NOTICE, `${tree} counted`);
+      assert.equal(existsSync(m.state), false, `${tree} wrote telemetry state`);
+      assert.equal(JSON.parse((await go(['telemetry', 'status', '--json'])).stdout).reason.source, 'checkout');
+    }
   }
 });
 
@@ -947,6 +993,106 @@ test('A5h: a damaged or lost record of the home means off, and a directory that 
   await plain.run(['--version']);
   await plain.settle();
   assert.deepEqual(usagePosts(plain), []);
+});
+
+test('A5k: off marks every state directory at once; one nobody used while off stays off when the home is lost', async t => {
+  for (const loss of ['deleted', 'moved', 'another HOME']) {
+    const m = machine(t);
+    const user = join(m.home, `.${PRODUCT}`), b = join(m.parent, 'other-state');
+    const inB = { [HOME_ENV_NAME]: b }, inUser = { [HOME_ENV_NAME]: user };
+    await m.run(['--version'], { env: inB });
+    m.advance(25);
+    await m.run(['--version'], { env: inB });
+    await m.settle();
+    await m.run(['map', '.', '--text', '--no-execute'], { env: inB });
+    const sentBefore = usagePosts(m).length;
+    const off = json(await m.run(['telemetry', 'off', '--json'], { env: inUser }));
+    assert.ok(off.other_directories.includes(b), `${loss}: off did not mark the other directory`);
+    assert.ok(existsSync(join(b, 'telemetry.off')));
+    // B is not used while off. Then the home's files go away.
+    if (loss === 'deleted') rmSync(user, { recursive: true, force: true });
+    if (loss === 'moved') renameSync(user, `${user}-aside`);
+    const other = loss === 'another HOME' ? { HOME: join(m.parent, 'another-home'), USERPROFILE: join(m.parent, 'another-home') } : {};
+    for (let day = 0; day < 3; day++) {
+      m.advance(25);
+      await m.run(['stacks', '--json'], { env: { ...inB, ...other } });
+      await m.settle();
+    }
+    assert.equal(usagePosts(m).length, sentBefore, `${loss}: the directory nobody used while off sent`);
+    assert.equal(existsSync(join(b, 'telemetry', 'counts.jsonl')), false, `${loss}: the directory nobody used while off counted`);
+  }
+});
+
+test('A5k, F6: on lifts the markers off put in other directories, keeps those that turned themselves off, and names them', async t => {
+  const m = machine(t);
+  const user = join(m.home, `.${PRODUCT}`), b = join(m.parent, 'other-state'), c = join(m.parent, 'third-state');
+  const inUser = { [HOME_ENV_NAME]: user };
+  for (const dir of [b, c]) await m.run(['--version'], { env: { [HOME_ENV_NAME]: dir } });
+  await m.run(['telemetry', 'off', '--json'], { env: { [HOME_ENV_NAME]: b } }); // B turns itself off
+  await m.run(['telemetry', 'off', '--json'], { env: inUser }); // then the home: C is marked
+  assert.ok(existsSync(join(c, 'telemetry.off')));
+  const on = json(await m.run(['telemetry', 'on', '--json'], { env: inUser }));
+  assert.deepEqual(on.still_off, [b]);
+  assert.equal(existsSync(join(c, 'telemetry.off')), false, 'on did not lift the marker off put in C');
+  assert.ok(existsSync(join(b, 'telemetry.off')), 'on removed the marker of a directory that turned itself off');
+  const text = await m.run(['telemetry', 'off'], { env: inUser }) && await m.run(['telemetry', 'on'], { env: inUser });
+  assert.match(text.stdout, /can count again, except in the state directories named below/);
+  assert.match(text.stdout, new RegExp(`stay off until telemetry on is run with them: ${b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  assert.equal(json(await m.run(['telemetry', 'status', '--json'], { env: { [HOME_ENV_NAME]: b } })).state, 'off');
+});
+
+test('F4: a home whose marker cannot be read (mode 000) holds every directory off', async t => {
+  if (process.platform === 'win32' || process.getuid?.() === 0) { t.skip('needs POSIX permissions'); return; }
+  const m = machine(t);
+  const user = join(m.home, `.${PRODUCT}`), b = join(m.parent, 'other-state');
+  await m.run(['--version'], { env: { [HOME_ENV_NAME]: b } });
+  rmSync(join(b, 'telemetry.off'), { force: true });
+  mkdirSync(user, { recursive: true });
+  writeFileSync(join(user, 'telemetry.off'), '{}');
+  chmodSync(user, 0o000);
+  t.after(() => { try { chmodSync(user, 0o700); } catch { /* removed */ } });
+  m.advance(25);
+  await m.run(['--version'], { env: { [HOME_ENV_NAME]: b } });
+  await m.settle();
+  chmodSync(user, 0o700);
+  assert.deepEqual(usagePosts(m), [], 'an unreadable home marker did not hold off');
+  assert.equal(existsSync(join(b, 'telemetry', 'counts.jsonl')), false);
+});
+
+test('A5h: a state directory first used while its home is off keeps that off when the home is lost', async t => {
+  const m = machine(t);
+  const user = join(m.home, `.${PRODUCT}`), fresh = join(m.parent, 'fresh-state');
+  await m.run(['telemetry', 'off', '--json'], { env: { [HOME_ENV_NAME]: user } });
+  await m.run(['--version'], { env: { [HOME_ENV_NAME]: fresh } }); // first use, while off
+  rmSync(user, { recursive: true, force: true });
+  const again = await m.run(['--version'], { env: { [HOME_ENV_NAME]: fresh } });
+  assert.doesNotMatch(again.stderr, NOTICE, 'a directory first used while off started over once the home was lost');
+  m.advance(25);
+  await m.run(['stacks', '--json'], { env: { [HOME_ENV_NAME]: fresh } });
+  await m.settle();
+  assert.deepEqual(usagePosts(m), []);
+});
+
+test('A5e: a directory whose send held its lock during off discards its old data after on', async t => {
+  const m = machine(t);
+  const user = join(m.home, `.${PRODUCT}`), b = join(m.parent, 'other-state');
+  const inB = { [HOME_ENV_NAME]: b }, inUser = { [HOME_ENV_NAME]: user };
+  await m.run(['--version'], { env: inB });
+  await m.run(['stacks', '--json'], { env: inB });
+  m.advance(25);
+  m.setMode('hang');
+  await m.run(['stacks', '--json'], { env: inB }); // B's sender holds B's lock with B's counts
+  const old = m.readState(join(b, 'telemetry.json')).install;
+  await m.run(['telemetry', 'off', '--json'], { env: inUser });
+  await m.settle();
+  await m.run(['telemetry', 'on', '--json'], { env: inUser });
+  m.setMode('accept');
+  m.advance(24);
+  await m.run(['--help'], { env: inB });
+  await m.settle();
+  const last = JSON.parse(usagePosts(m).at(-1).body);
+  assert.notEqual(last.install, old, 'an identifier from before off was sent');
+  assert.deepEqual(last.features, {}, 'counts from before off were sent');
 });
 
 test('A5i: off racing the first command of a fresh machine always holds', async t => {
