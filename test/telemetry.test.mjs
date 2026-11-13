@@ -360,8 +360,12 @@ test('USE-1-08: JSON stays JSON with the notice pending, and connect carries the
 });
 
 // --- USE-1-09 -------------------------------------------------------------------
-function mcp(m, { lines }) {
+// The server is killed when the test ends, passed or failed, and every wait
+// for a reply has a deadline, so a broken behavior fails instead of hanging.
+function mcp(t, m) {
   const child = spawn(process.execPath, [CLI, 'mcp', 'serve'], { cwd: m.root, env: { ...m.env, API_CONTEXT_DIR: m.root }, stdio: ['pipe', 'pipe', 'pipe'] });
+  const exited = new Promise(resolve => child.once('close', resolve));
+  t.after(async () => { if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exited; } });
   const replies = new Map(), waiters = new Map();
   let buffer = '';
   child.stdout.on('data', chunk => {
@@ -373,18 +377,23 @@ function mcp(m, { lines }) {
       waiters.get(msg.id)?.();
     }
   });
-  const call = (id, message) => new Promise(resolve => {
+  const call = (id, message) => new Promise((resolve, reject) => {
     const sent = performance.now();
-    waiters.set(id, () => resolve({ ...replies.get(id), ms: replies.get(id).at - sent }));
+    const timer = setTimeout(() => { waiters.delete(id); reject(new Error(`MCP reply ${id} did not arrive within 15 s`)); }, 15_000);
+    waiters.set(id, () => { clearTimeout(timer); resolve({ ...replies.get(id), ms: replies.get(id).at - sent }); });
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, ...message }) + '\n');
   });
-  const close = () => new Promise(resolve => { child.once('close', resolve); child.stdin.end(); });
-  return { call, close, lines };
+  const close = async () => {
+    child.stdin.end();
+    const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
+    await exited; clearTimeout(timer);
+  };
+  return { call, close };
 }
 
 test('USE-1-09: the MCP server counts tool calls, relays the notice once and sends in the background', async t => {
   const m = machine(t);
-  const server = mcp(m, {});
+  const server = mcp(t, m);
   await server.call(1, { method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test' } } });
   const tool = { method: 'tools/call', params: { name: 'api_saved_requests', arguments: { action: 'list' } } };
   const first = (await server.call(2, tool)).msg;
@@ -400,7 +409,7 @@ test('USE-1-09: the MCP server counts tool calls, relays the notice once and sen
 
   m.age();
   m.setMode('hang');
-  const later = mcp(m, {});
+  const later = mcp(t, m);
   await later.call(1, { method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test' } } });
   const reply = await later.call(2, tool);
   assert.ok(reply.ms < 3000, `the tool result waited ${reply.ms} ms for the send`);
@@ -466,6 +475,12 @@ test('USE-1-11: a corrupt state file, a read-only or file state directory: comma
     assert.equal(status.state, 'unavailable', code);
     assert.equal(status.problem?.code, code);
   }
+  // connect records its notice itself; a damaged record is still not replaced.
+  await gitInit(corrupt.root);
+  const before = readFileSync(corrupt.stateFile, 'utf8');
+  const connect = await corrupt.run(['connect', '--json']);
+  assert.equal(json(connect).telemetry_notice, undefined, 'connect showed a notice it cannot record');
+  assert.equal(readFileSync(corrupt.stateFile, 'utf8'), before, 'connect replaced a damaged state file');
   // off replaces a corrupt record, which is the person's way out.
   assert.equal(json(await corrupt.run(['telemetry', 'off', '--json'])).state, 'off');
 });
