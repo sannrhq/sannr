@@ -833,7 +833,7 @@ test('A17a: a test run never counts or sends, and a packed copy run as the packa
     cpSync(join(ROOT, entry), join(copy, entry), { recursive: true });
   cpSync(join(ROOT, 'node_modules'), join(copy, 'node_modules'), { recursive: true });
   assert.equal(existsSync(join(copy, '.git')), false);
-  assert.ok(process.env.NODE_TEST_CONTEXT, 'this file runs under node --test');
+  if (!process.env.NODE_TEST_CONTEXT) { t.diagnostic('packed-copy half skipped: this file was not run by node --test, so there is no runner mark to inherit (the A17b test covers a run without it)'); return; }
   const env = { ...process.env, HOME: home, USERPROFILE: home };
   delete env[HOME_ENV_NAME]; delete env.DO_NOT_TRACK; delete env[TELEMETRY_ENV_NAME]; delete env.CI;
   for (const name of CI_VARIABLES) delete env[name];
