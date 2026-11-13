@@ -35,6 +35,12 @@ Install dependencies once per checkout (and after lockfile changes):
 npm ci --ignore-scripts --no-audit --no-fund
 ```
 
+Usage counts ([docs/telemetry.md](docs/telemetry.md)) are off in a source
+checkout: running the CLI, the MCP server or a test file from this repository
+counts nothing, sends nothing and creates no state file for usage counts. The test runner
+also sets `DO_NOT_TRACK=1`. Only `test/telemetry.test.mjs` turns them on, in a
+temporary `SANNR_HOME` and `HOME` with every request intercepted.
+
 For a small code change, run its affected tests, then the fast safety check
 before handoff. For example, an environment-selection fix:
 

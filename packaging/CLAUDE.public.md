@@ -43,17 +43,19 @@ process is in [CONTRIBUTING.md](CONTRIBUTING.md).
   (`feedback.send: ask | allow | never`). Collection stays local: a test
   asserts `lib/feedback.mjs` has no network capability, and only the API
   client's pinned feedback path may transmit the report, after writing its
-  receipt. The anonymous daily usage document (`lib/telemetry.mjs`,
+  receipt. The daily usage document (`lib/telemetry.mjs`,
   [docs/telemetry.md](docs/telemetry.md)) is on unless turned off, never sent
   before the one-time notice and 24 hours, exactly `lib/usage.schema.json` and
-  nothing else: fixed command names, counts, an API call count, version,
-  platform and a random install identifier. Never add a field, a name taken
-  from input, or an endpoint override; `telemetry off`, `SANNR_TELEMETRY=0`,
-  `DO_NOT_TRACK=1` and CI stop it. Requests otherwise go only to the API being
-  called, and `doctor` announces its one probe before sending it. Tests must
-  keep telemetry off (the shared runner sets it) unless they turn it on in an
-  isolated `SANNR_HOME`. Keep all of this true. See
-  [docs/feedback.md](docs/feedback.md).
+  nothing else: names from `lib/usage-features.json`, counts, an API call
+  count, version, platform and a random install identifier. Never add a field,
+  a name taken from input, or an endpoint setting; `telemetry off`,
+  `SANNR_TELEMETRY=0`, `DO_NOT_TRACK=1` and CI stop it. A source checkout of
+  this repository never counts or sends: running the CLI or a test file from
+  here (`node --test test/<file>`) creates no state file for usage counts; only a test that
+  sets `SANNR_TELEMETRY_CHECKOUT` to this checkout's real path, with an
+  isolated `SANNR_HOME` and `HOME`, turns it on. Requests otherwise go only to
+  the API being called, and `doctor` announces its one probe before sending
+  it. Keep all of this true. See [docs/feedback.md](docs/feedback.md).
 
 ## Map of the repo
 

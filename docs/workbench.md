@@ -261,7 +261,7 @@ Everything the page saves stays under the private, gitignored
 responses. None of it changes API bindings, shared knowledge or credentials;
 the one ledger write is a note you save by hand.
 The workbench uses package-local assets and no account. The page itself sends
-nothing; the CLI's anonymous daily usage counts ([telemetry](telemetry.md)) count
+nothing; the CLI's daily usage counts ([telemetry](telemetry.md)) count
 a workbench launch like any other command.
 Explicit feedback continues to follow the existing
 [feedback-send policy](feedback.md). See

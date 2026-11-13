@@ -10,22 +10,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
 
 ## [Unreleased]
 
-- Anonymous usage counts. Unless turned off, Sannr sends one document a day to
-  `https://sannr.dev/api/v1/usage`: a random install identifier, the version,
-  operating system and processor family, Node major version, the previous send
-  date, how many times each command and MCP tool ran under fixed names, and how
-  many API calls went through it; nothing about repositories, APIs or requests.
-  The contract ships as `lib/usage.schema.json`. Nothing is counted or sent
-  until a one-time notice has been shown (in `connect` output, once on standard
-  error, or in the MCP server's first tool result), and the first document waits
-  24 hours after it. `sannr telemetry off` (or telling the agent "opt out") turns
-  it off for the machine for good and sends nothing; `SANNR_TELEMETRY=0`,
-  `DO_NOT_TRACK=1` and CI environments turn it off per process. New
-  `sannr telemetry` command: `status`, `show` (the exact next document), `off`,
-  `on`, `reset`. A detached process sends it, so no command waits for it or
-  changes its output or exit code. The install prompt, README, privacy, network
-  behavior, feedback and security pages say so; see `docs/telemetry.md`.
-  `capabilities` lists the new destination and state files.
+- Usage counts. Unless turned off, Sannr sends one document a day to
+  `https://sannr.dev/api/v1/usage`: a random install identifier that links one
+  day's document to the next, the version, operating system and processor
+  family, Node major version, the previous send date, how many times each
+  command and MCP tool ran under the fixed names in `lib/usage-features.json`,
+  and how many API requests it executed; nothing about repositories, APIs or
+  requests. The contract ships as `lib/usage.schema.json`. Nothing is counted
+  or sent until a one-time notice has been printed (in `connect` output, once
+  on standard error, or as an extra text block in the MCP server's first tool
+  result), and the first document waits 24 hours after it. `sannr telemetry
+  off` (or telling the agent "opt out") turns it off for the operating-system
+  user until `telemetry on`, and sends nothing; `SANNR_TELEMETRY=0`,
+  `DO_NOT_TRACK=1`, CI environments, a source checkout of Sannr and any
+  `--dry-run` turn it off per process. New `sannr telemetry` command:
+  `status`, `show` (the exact next document), `off`, `on`, `reset`. A detached
+  process sends it, so no command waits for it or changes its output or exit
+  code. The install prompt, README, privacy, network behavior, feedback and
+  security pages say so; see `docs/telemetry.md`. `capabilities` lists the new
+  destination and state files, and the pointer block `connect` writes gains
+  one line saying what "opt out" means.
+- The generated `.sannr/README.md` guide now reads "There's no account, and
+  this knowledge is never sent to Sannr" instead of "There's no account and no
+  Sannr server", so connected repositories see a one-line change in that
+  committed file the next time `connect` or `migrate` refreshes it.
 - `view --open` on Windows hands the written page to PowerShell's `Start-Process`,
   the opener the Workbench already used (now shared in `lib/os-open.mjs`), instead
   of explorer.exe, which exits 1 after a successful open and so made every

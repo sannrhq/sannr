@@ -35,7 +35,7 @@ what the agent checked, and three questions for the agent that used it. Nothing
 is sent until you say so; `npx @sannr/sannr feedback --send` asks first and submits an
 anonymized summary to `https://sannr.dev/api/v1/feedback`. See
 [feedback](docs/feedback.md) for exactly what leaves the machine. The separate
-anonymous daily usage counts are described in [telemetry](docs/telemetry.md).
+daily usage counts are described in [telemetry](docs/telemetry.md).
 
 ## Security
 

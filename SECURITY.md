@@ -6,10 +6,11 @@ Sannr runs on your machine and in your CI. It executes HTTP requests
 you or your agent ask for, reads and writes files inside the repository
 it was run in, spawns MCP servers you name, imports API client exports
 you give it, and installs configuration into your coding agent when you
-ask it to. Unless turned off, it sends one anonymous usage document a day to
-`https://sannr.dev/api/v1/usage` (counts per command name and of API calls, with
-a random install identifier; see [docs/telemetry.md](docs/telemetry.md)); it carries
-nothing about your repositories, APIs or requests. Network-capable commands can contact configured
+ask it to. Unless turned off, it sends one usage document a day to
+`https://sannr.dev/api/v1/usage`: counts per command name and of API calls,
+with a random install identifier that links one day's document to the next
+([docs/telemetry.md](docs/telemetry.md) says what the endpoint keeps). It
+carries nothing about your repositories, APIs or requests. Network-capable commands can contact configured
 APIs, OAuth endpoints and redirects, and opt-in integrations such as Postman.
 Installing with npm/npx downloads packages from the registry. `doctor` announces
 each read before sending it through the client. Without a configured API, it
