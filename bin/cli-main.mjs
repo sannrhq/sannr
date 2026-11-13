@@ -5741,14 +5741,16 @@ function cmdTelemetry(argv) {
   try {
     if (sub === "off") {
       const value = telemetryOff();
-      const tail = " Turning it off sent nothing; a document already on its way may still arrive.";
+      const tail = " Turning it off sent nothing; a document that was being prepared or was already on its way may still go out within a few seconds.";
       const cleared = value.cleanup_pending
         ? " Identifiers and unsent counts are deleted before any of those state directories counts or sends again."
         : value.removed.length ? ` Removed: ${value.removed.join(", ")}.` : "";
       let human;
       if (value.scope === "home") {
         human = `Telemetry is off for every ${PROSE_PRODUCT_TITLE} process run with the home directory ${value.home}, recorded in ${value.user_state_file}` +
-          `${value.recorded.here && value.state_file !== value.user_state_file ? ` and in ${value.state_file}` : ""}. ` +
+          `${value.recorded.here && value.state_file !== value.user_state_file ? ` and in ${value.state_file}` : ""}` +
+          `${value.other_directories.length ? `, and marked off in ${value.other_directories.length} other state director${value.other_directories.length === 1 ? "y" : "ies"} used with this home (${value.other_directories.join(", ")})` : ""}. ` +
+          (value.unmarked_directories.length ? `These state directories could not be marked and stay off only while the home's marker is there: ${value.unmarked_directories.join(", ")}. ` : "") +
           `It stays off until ${CLI_NAME} telemetry on; a process run with another home directory keeps its own setting.${tail}${cleared}` +
           (value.here_problem ? ` Off could not also be written in ${value.state_file} (${value.here_problem.message}); the record for the home covers it.` : "");
       } else if (value.scope === "directory") {
@@ -5756,7 +5758,7 @@ function cmdTelemetry(argv) {
           `so other ${PROSE_PRODUCT_TITLE} state directories used with this home can still count and send. To turn it off everywhere, make that location writable and run ${CLI_NAME} telemetry off again, ` +
           `or set ${TELEMETRY_ENV_NAME}=0 or DO_NOT_TRACK=1 in the environment of every ${PROSE_PRODUCT_TITLE} process.${tail}${cleared}`;
       } else {
-        human = `Telemetry could not be turned off: neither ${value.state_file} (${value.here_problem.message}) nor ${value.user_state_file} (${value.user_problem?.message ?? value.here_problem.message}) could be written. ` +
+        human = `Telemetry could not be turned off: ${value.same_directory ? `${value.state_file} could not be written (${value.here_problem.message})` : `neither ${value.state_file} (${value.here_problem.message}) nor ${value.user_state_file} (${value.user_problem?.message ?? value.here_problem.message}) could be written`}. ` +
           `Set ${TELEMETRY_ENV_NAME}=0 or DO_NOT_TRACK=1 in the environment of every ${PROSE_PRODUCT_TITLE} process, or fix those locations and run ${CLI_NAME} telemetry off again. Nothing was sent.`;
       }
       print(value, human);
@@ -5764,9 +5766,11 @@ function cmdTelemetry(argv) {
     } else if (sub === "on") {
       const value = telemetryOn();
       const parts = [`Telemetry is on for ${value.state_file}; this state directory starts with a new identifier at its next document, and no earlier counts are kept.`];
-      if (value.home_off_lifted) parts.push(`The off recorded for the home directory ${value.home} is lifted, so ${PROSE_PRODUCT_TITLE} processes run with it can count again.`);
+      const blocked = [...value.still_off, ...value.not_lifted];
+      if (value.home_off_lifted) parts.push(`The off recorded for the home directory ${value.home} is lifted, so ${PROSE_PRODUCT_TITLE} processes run with it can count again${blocked.length ? ", except in the state directories named below" : ""}.`);
       else parts.push(value.directory_was_off ? "" : "It was not off.");
       if (value.still_off.length) parts.push(`These state directories were turned off themselves and stay off until telemetry on is run with them: ${value.still_off.join(", ")}.`);
+      if (value.not_lifted.length) parts.push(`These state directories could not be lifted and stay off: ${value.not_lifted.join(", ")}.`);
       if (value.overridden_by) parts.push(`${value.overridden_by.variable ?? "This environment"} still turns it off for processes that have it.`);
       print(value, [parts.filter(Boolean).join(" "), ...(value.notice ? [value.notice] : [])].join("\n"));
     } else {
