@@ -197,6 +197,7 @@
     "lib/telemetry-send.mjs",
     "lib/telemetry.mjs",
     "lib/terminal.mjs",
+    "lib/usage-features.json",
     "lib/usage.schema.json",
     "lib/verdicts.mjs",
     "lib/verify.mjs",

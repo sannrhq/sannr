@@ -1477,7 +1477,7 @@ async function cmdConnect(argv, { silent = false, selectedContract, createdStack
 
   // The first time Sannr runs on a machine through connect, the telemetry
   // notice is part of what connect prints, for the agent to relay.
-  const telemetryNotice = takeConnectNotice();
+  const telemetryNotice = dryRun ? null : takeConnectNotice();
   if (telemetryNotice) report.telemetry_notice = telemetryNotice;
   if (asJson) console.log(JSON.stringify(report, null, 1));
   else {
@@ -5632,7 +5632,7 @@ const HELP = {
              example: `${CLI_NAME} prune "GET /legacy" "GET /old" --dry-run` },
   unwire:  { blurb: "undo connect: remove its registrations, skills, pointer block, and exact generated CI artifacts",
              example: `${CLI_NAME} unwire` },
-  telemetry: { blurb: "anonymous daily usage counts: status, show (the exact document), off, on, reset; off is for good",
+  telemetry: { blurb: "daily usage counts: status, show (the exact document), off (for this user until on), on, reset",
              example: `${CLI_NAME} telemetry off` },
   start:   { blurb: "set up your coding agent, inventory local APIs without requests, and prepare the next task",
              example: `${CLI_NAME} start` },
@@ -5726,7 +5726,7 @@ function printCommandHelp(name) {
 
 // --- telemetry ---------------------------------------------------------------
 //
-// The anonymous daily usage document (lib/telemetry.mjs, docs/telemetry.md).
+// The daily usage document (lib/telemetry.mjs, docs/telemetry.md).
 // None of these subcommands is counted, and none sends anything.
 function cmdTelemetry(argv) {
   const json = argv.includes("--json");
@@ -5740,7 +5740,7 @@ function cmdTelemetry(argv) {
   try {
     if (sub === "off") {
       const value = telemetryOff();
-      print(value, `Telemetry is off for this machine, for good, until ${CLI_NAME} telemetry on. Nothing was sent.${value.removed.length ? ` Removed: ${value.removed.join(", ")}.` : ""}`);
+      print(value, `Telemetry is off for this operating-system user, until ${CLI_NAME} telemetry on. Turning it off sent nothing; a document already on its way may still arrive.${value.removed.length ? ` Removed: ${value.removed.join(", ")}.` : ""}${value.problem ? ` ${value.problem.message}` : ""}`);
     } else if (sub === "on") {
       const value = telemetryOn();
       print(value, [`Telemetry is on.${value.overridden_by ? ` ${value.overridden_by.variable} still turns it off in this environment.` : ""}`, ...(value.notice ? [value.notice] : [])].join("\n"));
@@ -5761,7 +5761,7 @@ const requestedCommand = argv[0];
 const doctorAliases = new Set(["status", "check", "health", "ping"]);
 const command = doctorAliases.has(requestedCommand) ? "doctor" : requestedCommand;
 
-// Anonymous usage counts (docs/telemetry.md): the one-time notice on stderr,
+// Usage counts (docs/telemetry.md): the one-time notice on stderr,
 // this run's count and, when one is due, a detached send. Synchronous local
 // file work only; it never changes stdout or the exit code.
 cliStart(argv);

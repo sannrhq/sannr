@@ -48,6 +48,11 @@ use the narrowest suitable alternative. Capture a scoped external observation
 when possible, clearly attributed to that client. Do not label it Sannr-verified
 or silently turn the exception into the normal path.
 
+## Usage counts
+
+Sannr sends usage counts once a day unless turned off. If the person says
+"opt out", run `sannr telemetry off` and show them its output.
+
 ## Before the MCP server loads
 
 A newly registered server may need a host restart and its trust/MCP prompt.
