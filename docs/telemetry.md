@@ -55,10 +55,15 @@ records at its edge is outside Sannr's code.
 From the endpoint's own description: "Sannr's server keeps no IP address. Its
 rate limiter keeps a daily-salted, keyed hash of the address, deleted after
 that day (within about 48 hours) and recoverable from Cloudflare's storage
-history for up to 30 days." The stored counts carry no address and no hash of
-one. A document is kept as one row per install per UTC day for at least 180
-days, and about two months longer until its month is complete; then the rows
-are folded into monthly totals and deleted.
+history for up to 30 days." The endpoint's description adds that anyone
+holding the limiter's secret could recover an IPv4 address from such a hash by
+trying every address for that date. The stored counts carry no address and no
+hash of one. On retention, in the endpoint's words: a row "lives at least 180
+days and about two months longer (until its month is whole and 27 days more),
+plus however many nights the delete budget needs"; that budget keeps up with
+about 20,000 daily installs. Then the rows are folded into monthly totals and
+deleted. A record of each install's first and last day seen is kept as long
+as any of its rows.
 
 ## When
 
@@ -72,11 +77,14 @@ are folded into monthly totals and deleted.
   whether anyone read it.
 - **A day later.** The first document is sent no earlier than 24 hours after
   the notice. If you turn it off within that day, nothing is ever sent.
-- **Once a UTC day at most** per state directory, whatever the identifier
-  (`telemetry reset` does not add a document to the day). When a document is
-  due, the next command (or the MCP server, in the background) sends it from a
-  separate process that the command does not wait for. A dry run (`--dry-run`)
-  records no notice, counts nothing and starts no send. A failed send keeps
+- **At most one document per UTC day by this machine's clock,** per state
+  directory, whatever the identifier: `telemetry off`, `on` and `reset` keep
+  the record of the day's document, so none of them adds a document to the
+  day. When a document is due, the next command (or the MCP server, in the
+  background) sends it from a separate process that the command does not wait
+  for. A dry run (`--dry-run`) records no notice, counts nothing and starts no
+  send; a command run with `--offline` (for example `doctor --offline`) starts
+  no send either. A failed send keeps
   the counts for the next attempt, with at most three attempts in a UTC day.
   Counts are cleared only when the endpoint answers 2xx.
 - **The request itself** is a `POST` with `content-type: application/json` and
@@ -109,26 +117,40 @@ Each command accepts `--json`.
 
 - `sannr telemetry off`, or tell your agent **"opt out"** and it runs that
   command (the install prompt, the pointer block `connect` writes into
-  `AGENTS.md` and `CLAUDE.md`, and the request skill all say so). Off is for
-  one operating-system user: it is recorded in the state directory the command
-  uses and in that user's default one (`~/.sannr`), and every process of that
-  user honors it whatever `SANNR_HOME` it has. It stays off across upgrades and
-  reinstalls until `sannr telemetry on`. It deletes the identifier, the unsent
-  counts and the saved documents (they contain the identifier), and turning it
-  off sends nothing. A document whose request had already started when you
-  turned it off may still arrive.
+  `AGENTS.md` and `CLAUDE.md`, and the request skill all say so). Off is
+  recorded in the state directory the command uses and in the default one of
+  the home directory it runs under (`~/.sannr`); every process with that home
+  honors it whatever `SANNR_HOME` it has. It deletes the identifier, the unsent
+  counts and the saved documents (they contain the identifier) in those two
+  directories; any other state directory of that home discards its identifier
+  and counts the next time Sannr uses it, and they are never sent. It stays off
+  across upgrades and reinstalls until `sannr telemetry on`. Turning it off
+  sends nothing; a document whose request had already started may still
+  arrive. If off cannot be recorded in `~/.sannr` (the location is not a
+  writable directory), `telemetry off` says that off holds only for the
+  directory it could write, and exits with status 1; set `SANNR_TELEMETRY=0`
+  or `DO_NOT_TRACK=1` for every Sannr process instead. A process run under a
+  different home directory has its own `~/.sannr` and its own setting.
 - For one process or environment: `SANNR_TELEMETRY=0` (also `off`, `false` or
   `no`), or `DO_NOT_TRACK=1`. A CI environment is off automatically: `CI` set
   to anything but `0` or `false`, or any of `GITHUB_ACTIONS`, `GITLAB_CI`,
   `BUILDKITE`, `CIRCLECI`, `JENKINS_URL`, `TF_BUILD`, `TEAMCITY_VERSION`. In
   such a process nothing is counted, no identifier is made, nothing is sent,
-  no notice is shown and the telemetry state is not written.
+  no notice is shown and the telemetry state is not written. The same holds
+  inside a test run: when `NODE_TEST_CONTEXT`, `VITEST` or `JEST_WORKER_ID` is
+  set.
 - A source checkout of Sannr (a `.git` directory or worktree file at the
   package root) never counts or sends, so contributors' and agents' test runs
-  stay out of the numbers. A published package has no `.git`.
+  stay out of the numbers. A published package has no `.git`; a ZIP download or
+  a vendored copy of the source cannot be told from one.
 - `sannr telemetry reset` deletes the identifier; a new one is made at the next
-  document, which is not sent before the next UTC day.
-- `sannr telemetry on` turns it back on, with a new identifier.
+  document. It adds no document to the day: if one was sent today, the next
+  waits for the next UTC day.
+- `sannr telemetry on` turns it on for its state directory with a new
+  identifier and no earlier counts, and lifts an off recorded in `~/.sannr`, so
+  every state directory of that home can count again, except one where off was
+  recorded itself: run `telemetry on` with that `SANNR_HOME` to lift it. It
+  says what it lifted.
 
 ## Where it lives
 

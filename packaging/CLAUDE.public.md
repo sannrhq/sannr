@@ -50,10 +50,13 @@ process is in [CONTRIBUTING.md](CONTRIBUTING.md).
   count, version, platform and a random install identifier. Never add a field,
   a name taken from input, or an endpoint setting; `telemetry off`,
   `SANNR_TELEMETRY=0`, `DO_NOT_TRACK=1` and CI stop it. A source checkout of
-  this repository never counts or sends: running the CLI or a test file from
-  here (`node --test test/<file>`) creates no state file for usage counts; only a test that
-  sets `SANNR_TELEMETRY_CHECKOUT` to this checkout's real path, with an
-  isolated `SANNR_HOME` and `HOME`, turns it on. Requests otherwise go only to
+  this repository and any test run (`NODE_TEST_CONTEXT`, `VITEST`,
+  `JEST_WORKER_ID`) never count or send: running the CLI, a packed copy or a
+  test file from here (`node --test test/<file>`) creates no state file for
+  usage counts. Every test that runs the CLI, the server or a packed copy
+  imports `test/helpers/isolated-home.mjs` first; only `test/telemetry.test.mjs`
+  turns counting on, removing the test-run mark and naming this checkout in
+  `SANNR_TELEMETRY_CHECKOUT`, with an isolated `SANNR_HOME` and `HOME`. Requests otherwise go only to
   the API being called, and `doctor` announces its one probe before sending
   it. Keep all of this true. See [docs/feedback.md](docs/feedback.md).
 

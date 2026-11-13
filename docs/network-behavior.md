@@ -22,7 +22,7 @@ manager. These are separate network paths.
   These probes send no configured credentials, follow no redirects, make no
   retries and perform no OAuth grants. Evidence stays local, separate from
   shared API contract knowledge.
-- `doctor --offline` skips the API probe. It still checks the registered MCP
+- `doctor --offline` skips the API probe and starts no daily usage send. It still checks the registered MCP
   process. Running the CLI or that process through `npx` can involve npm; the flag
   is not a network sandbox for npm or an arbitrary registered executable.
 - `npm`/`npx` use the registry, proxies and cache configured for npm. npm normally
@@ -84,7 +84,8 @@ does not contact Postman. See [imports](imports.md).
 ## Daily usage counts
 
 Once the one-time notice has been printed on a machine and 24 hours have passed,
-the next command (or the MCP server) sends at most one document a UTC day:
+the next command (or the MCP server) sends at most one document per UTC day by
+this machine's clock:
 `POST https://sannr.dev/api/v1/usage` with `content-type: application/json`, a
 user agent of the product name and version (plus Node's standard request
 headers), no cookie or authorization, no redirect followed and a five-second
@@ -104,10 +105,11 @@ code because of it; a failed send is retried by a later command, at most three
 attempts a day.
 
 Nothing is counted or sent with `SANNR_TELEMETRY=0`, `DO_NOT_TRACK=1`, in a CI
-environment, from a source checkout, in a `--dry-run`, before the notice, or
-after `telemetry off`, which turns it off for the operating-system user until
-`telemetry on` and sends nothing (a request already under way may still
-arrive). `telemetry show` prints the exact next document. See
+environment or test run, from a source checkout, in a `--dry-run`, before
+the notice, or after `telemetry off`, which turns it off for every state
+directory under the same home until `telemetry on` and sends nothing (a
+request already under way may still arrive). A command run with `--offline`
+starts no send. `telemetry show` prints the exact next document. See
 [telemetry](telemetry.md).
 
 ## Reports, links and audit evidence

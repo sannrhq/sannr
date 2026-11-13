@@ -22,8 +22,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   result), and the first document waits 24 hours after it. `sannr telemetry
   off` (or telling the agent "opt out") turns it off for the operating-system
   user until `telemetry on`, and sends nothing; `SANNR_TELEMETRY=0`,
-  `DO_NOT_TRACK=1`, CI environments, a source checkout of Sannr and any
-  `--dry-run` turn it off per process. New `sannr telemetry` command:
+  `DO_NOT_TRACK=1`, CI environments, test runs (`NODE_TEST_CONTEXT`, `VITEST`,
+  `JEST_WORKER_ID`), a source checkout of Sannr and any `--dry-run` turn it off
+  per process, and a command run with `--offline` starts no send. When off
+  cannot be recorded for the user, `telemetry off` says where it did hold and
+  exits 1. New `sannr telemetry` command:
   `status`, `show` (the exact next document), `off`, `on`, `reset`. A detached
   process sends it, so no command waits for it or changes its output or exit
   code. The install prompt, README, privacy, network behavior, feedback and
@@ -34,6 +37,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   this knowledge is never sent to Sannr" instead of "There's no account and no
   Sannr server", so connected repositories see a one-line change in that
   committed file the next time `connect` or `migrate` refreshes it.
+- `connect`'s closing line now reads "I live in your repo, what I learn about
+  your APIs stays here, and I haven't sent anything anywhere yet" instead of
+  "there's no server on my end, and I haven't phoned anyone yet".
 - `view --open` on Windows hands the written page to PowerShell's `Start-Process`,
   the opener the Workbench already used (now shared in `lib/os-open.mjs`), instead
   of explorer.exe, which exits 1 after a successful open and so made every
