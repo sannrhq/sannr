@@ -1460,6 +1460,8 @@ test('A5l: off marks only listed directories that exist, creates none, writes no
   await m.run(['--version'], { env: { [HOME_ENV_NAME]: b } });
   const missing = join(m.parent, 'gone'), file = join(m.parent, 'a-file');
   writeFileSync(file, 'x');
+  // A relative entry that names a real directory from the current one.
+  mkdirSync(join(m.root, 'relative', 'dir'), { recursive: true });
   writeFileSync(list, ['relative/dir', '   ', ` ${b}`, missing, file, join(file, 'under'), b, ''].join('\n'));
   const off = json(await m.run(['telemetry', 'off', '--json'], { env: { [HOME_ENV_NAME]: user } }));
   assert.deepEqual(off.other_directories, [b]);
@@ -1467,7 +1469,7 @@ test('A5l: off marks only listed directories that exist, creates none, writes no
   assert.equal(existsSync(missing), false, 'off created a listed directory that did not exist');
   assert.equal(readFileSync(file, 'utf8'), 'x');
   assert.deepEqual(telemetryFiles(m.root), [], 'off wrote into the current directory');
-  assert.equal(existsSync(join(m.root, 'relative')), false);
+  assert.deepEqual(readdirSync(join(m.root, 'relative', 'dir')), [], 'off marked a relative entry');
   assert.deepEqual(readFileSync(list, 'utf8').split('\n').filter(Boolean), [b], 'the list was not pruned');
 });
 
