@@ -473,8 +473,10 @@ Review deciders remain people or agents.
 
 A note installed by [`stack import`](stacks.md#import-a-stack-from-another-repository)
 keeps the author's `by`, `at`, `basis` and `source` and adds an `imported`
-object to its provenance: `source`, optional `commit`, `at` (the import day) and
-`note` (the note's identity in the source). It is covered by the note identity
+object to its provenance: `source`, optional `commit`, `at` (the import day),
+`note` (the note's identity in the source) and, when the author had attached
+runs, `evidence_count`. The author's evidence references themselves are not
+imported. It is covered by the note identity
 like the rest of the provenance. Read models add `imported` beside `basis` and
 `author`; the human view and managed blocks append `imported from "<source>" at
 commit <id> on <date>`. The knowledge file's root gains `imported_from` with the

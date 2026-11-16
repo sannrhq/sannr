@@ -149,7 +149,7 @@ test('IMP-04: show and context query tell an imported note from a local one and 
   assert.ok(human.includes(`imported from "../source" at commit ${source.commit.slice(0, 12)} on ${today()}`), human);
 });
 
-test('IMP-05: the envFile, the shared account fact and evidence files stay behind; evidence references read as unavailable', async t => {
+test('IMP-05: the envFile, the shared account fact, evidence files and evidence references stay behind; only their count arrives, read as unavailable', async t => {
   const box = sandbox(t);
   const listener = createServer((request, response) => { response.setHeader('content-type', 'application/json'); response.end('[]'); });
   await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve));
@@ -173,7 +173,14 @@ test('IMP-05: the envFile, the shared account fact and evidence files stay behin
   assert.ok(!knowledge.includes('Trial account'));
   assert.ok(receipt.stacks[0].not_imported.includes('account_facts'));
   const observed = (await show(box, target, 'pets')).note_history.active.find(record => record.text.startsWith('Observed:'));
-  assert.deepEqual(observed.provenance.evidence.map(reference => [reference.run_id, reference.state, reference.digest]), [[run, 'unavailable', null]]);
+  assert.equal(observed.provenance.evidence, undefined);
+  assert.ok(!knowledge.includes(run) && !knowledge.includes('127.0.0.1'), 'no run ID or provider URL of the author is carried');
+  const projected = (await show(box, target, 'pets')).note_projection.records.find(record => record.text.startsWith('Observed:'));
+  assert.deepEqual([projected.imported.evidence_count, projected.imported.evidence_state], [1, 'unavailable']);
+  writeJson(join(target, 'query.json'), { operation: OP });
+  const queried = ok(await box.cli(target, ['context', 'query', 'query.json', '--stack', 'pets'])).note_context.records.find(record => record.text.startsWith('Observed:'));
+  assert.deepEqual([queried.imported.evidence_count, queried.imported.evidence_state], [1, 'unavailable']);
+  assert.ok(ok(await box.cli(target, ['show', OP, '--stack', 'pets', '--human'])).includes('the author attached 1 run in the source, unavailable here'));
   const evidence = join(target, LAYOUT.evidence, 'pets');
   assert.deepEqual(existsSync(evidence) ? readdirSync(evidence) : [], []);
 });

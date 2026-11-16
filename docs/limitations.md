@@ -54,7 +54,7 @@ see [SUPPORT.md](../SUPPORT.md).
 - A stack is shared across repositories by copying it with
   [`stack import`](stacks.md#import-a-stack-from-another-repository); there is
   no live link. It brings the contract, the active authored notes and the
-  stack facts. Learned response shapes, verification state, review decisions,
+  stack facts. Evidence references (only their count), learned response shapes, verification state, review decisions,
   superseded history and unattributed notes are not imported. An update never
   changes the local `stack.json` or contract, so a contract that changed in
   the source is reported and has to be replaced by hand. A Git source is

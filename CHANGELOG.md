@@ -17,7 +17,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   `--ref` picks a Git ref, `--dry-run` writes nothing and `--json` prints the
   receipt. The source is validated as untrusted data; its contract, active
   authored notes and stack facts arrive, and `envFile` paths, account facts,
-  evidence files, learned shapes and review decisions do not. Imported notes
+  evidence files and references (only their count), learned shapes and review
+  decisions do not. Imported notes
   keep the author's basis, date and source and carry an additive `imported`
   provenance record (source, commit, import date) that `show`,
   `context query`, request `known` blocks, managed instructions and `stacks`

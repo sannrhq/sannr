@@ -200,7 +200,7 @@ similar) refuse by name with `STACK_CONTRACT_INVALID`; the message tells the
 source's author what to rename. No other file in the source folder is copied.
 A symbolic link anywhere in the stack folder refuses (`STACK_UNSAFE_PATH`).
 Every note passes the note secret check, and so do its author name, source
-reference and evidence metadata; a secret-shaped value refuses with
+reference and applicability; a secret-shaped value refuses with
 `SECRET_IN_NOTE` and exit 2 without printing it. A secret-shaped contract
 title or path refuses with `STACK_SECRET_LITERAL`. A malformed or changed
 note history refuses with exit 3. Any refusal leaves the repository unchanged. Nothing in a source
@@ -213,8 +213,11 @@ What stays behind: `envFile` paths, shared account facts, evidence files and
 private storage, superseded note history, unattributed and machine-generated
 notes, learned response shapes and verification state, and review decisions.
 The receipt names what it left out under `not_imported` and `skipped`. An
-evidence reference on an imported note keeps its run ID and reads as
-`unavailable`, because the run is not on this machine. An imported stack is
+evidence reference is not carried at all: its run ID, the author's provider
+URL, environment name and build stay in the source, and a basis source that is
+a run ID is dropped. The imported note keeps only how many runs the author
+attached (`imported.evidence_count`), and `show` and `context query` read it
+as `unavailable` here. An imported stack is
 `written` until this repository observes or verifies it itself.
 
 Every imported note keeps its author, date, basis and source, and gains an
@@ -232,7 +235,8 @@ uncommitted changes in the source are imported and are not reflected in it.
 A name that already exists here and did not come from the same source refuses
 with `STACK_EXISTS` and names `--as`. So does any second import from a local
 source recorded by directory name only, because that name cannot show it is
-the same source; import from a Git URL or a nearby path to be able to update.
+the same source. An import that later imports can update needs a Git URL or a
+path within two directories of this repository.
 Importing again from the same source is an update: new upstream notes are added, a note the author superseded replaces
 its imported predecessor, and a note the author retired is retired here; the
 old text stays in `show --history`. Notes written, observed or reviewed in this
