@@ -53,9 +53,13 @@ process is in [CONTRIBUTING.md](CONTRIBUTING.md).
   repository, with or without `.git`, and any process a test runner marks
   never count or send. The test runner gives every test process its own home,
   state directory and usage log; every test file imports
-  `test/helpers/isolated-home.mjs` first (`test/test-isolation.test.mjs`
-  fails for one that does not), which also gives every process a test starts
-  with a hand-built environment the isolated home and the off switch. Only
+  `test/helpers/isolated-home.mjs` as its first import, however the file is
+  laid out (`test/test-isolation.test.mjs` fails for one that does not), which
+  also gives every process a test starts through `node:child_process` with a
+  hand-built environment the isolated home and the off switch. It cannot reach
+  a shell command that unsets `HOME`, a process the test did not start, or a
+  test deleting its own `HOME`; a process with no home directory in its
+  environment never counts, sends or writes telemetry state. Only
   `test/telemetry.test.mjs` turns counting on, naming this checkout in
   `SANNR_TELEMETRY_CHECKOUT`, with an isolated `SANNR_HOME` and `HOME`. Requests otherwise go only to
   the API being called, and `doctor` announces its one probe before sending

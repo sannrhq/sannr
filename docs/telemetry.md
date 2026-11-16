@@ -124,9 +124,13 @@ Each command accepts `--json`.
   `AGENTS.md` and `CLAUDE.md`, and the request skill all say so). Off is a small
   marker file, `telemetry.off`, written at once in the state directory the
   command uses, in the default one of its home directory (`~/.sannr`), and in
-  every other state directory that has been used with that home (each records
-  itself in `~/.sannr/telemetry.dirs` when first used); it never waits for a
-  send in progress. Every Sannr process run with that home
+  every other state directory recorded with that home: the CLI and the MCP
+  server record the state directory they use in `~/.sannr/telemetry.dirs`
+  each time they run. Only entries that are absolute paths to directories that
+  still exist are marked; `off` never creates a missing directory, and drops
+  the other entries from the list, which keeps at most the 256 most recently
+  recorded directories. If the list cannot be read, `off` says so and names
+  the directories it did mark. It never waits for a send in progress. Every Sannr process run with that home
   directory checks it before anything else, whatever `SANNR_HOME` it has, and
   nothing but `telemetry on` removes it. A process run with another home
   directory (another account, `sudo`, or a container or sandbox with its own
@@ -140,11 +144,20 @@ Each command accepts `--json`.
   directory it could write, and exits with status 1; set `SANNR_TELEMETRY=0`
   or `DO_NOT_TRACK=1` for every Sannr process instead.
 - A marker or a home record that exists and cannot be read means off, and
-  `telemetry status` says which file. Every state directory recorded with the
-  home holds its own copy of the marker, so losing or moving `~/.sannr` later,
-  or running with another `HOME`, does not turn any of them back on; a later
-  `telemetry on` for the home lifts those copies. A state directory first used
-  after `~/.sannr` was lost, and never recorded with it, has no copy.
+  `telemetry status` says which file. Every state directory that `off` marked
+  holds its own copy of the marker, so losing or moving `~/.sannr` later, or
+  running with another `HOME`, does not turn any of them back on; a later
+  `telemetry on` for the home lifts those copies.
+- `~/.sannr` itself is the home's record of off. Deleting or moving it after
+  `off` removes that record for the home's own default state directory: it
+  starts over as a fresh machine, with a new notice and, a day later, a new
+  identifier. Restoring `~/.sannr` from a backup made before `off` restores
+  what was true then, the old identifier and counts included. A state directory
+  that was not on the home's list when `off` ran (its list was missing,
+  damaged or unreadable, or the directory had not been used since the list was
+  lost) has no copy of the marker: it is held off only while `~/.sannr` keeps
+  its marker, and counts again if `~/.sannr` is later lost. A process run with
+  a different home directory never sees this home's off at all.
 - For one process or environment: `SANNR_TELEMETRY=0` (also `off`, `false` or
   `no`), or `DO_NOT_TRACK=1`. A CI environment is off automatically: `CI` set
   to anything but `0` or `false`, or any of `GITHUB_ACTIONS`, `GITLAB_CI`,
@@ -155,6 +168,14 @@ Each command accepts `--json`.
   (`NODE_TEST_CONTEXT`, `VITEST` or `JEST_WORKER_ID` set); other test runners
   (Mocha, AVA, tap, Bun, Deno) set none of these, so set `SANNR_TELEMETRY=0`
   there.
+- A process whose environment names no home directory (`HOME`, or
+  `USERPROFILE` on Windows, missing, empty or not an absolute path) is off,
+  whatever the system would answer for the account: nothing is counted or
+  sent, no notice is shown, nothing of the telemetry state is written anywhere, and
+  `telemetry status` says why (`telemetry off`, `on` and `reset` exit with
+  status 1 there, since there is no home to record anything for). An MCP host
+  that starts Sannr without a home directory in its environment is therefore
+  not counted.
 - A source tree of Sannr never counts or sends, so contributors' and agents'
   runs stay out of the numbers. A source tree is a package root that holds
   `.git` (a directory or a worktree file), the repository's test runner
@@ -168,15 +189,25 @@ Each command accepts `--json`.
 - `sannr telemetry on` removes the marker of its state directory, starts that
   directory with a new identifier and no earlier counts, lifts the off
   recorded in `~/.sannr`, and lifts the copies off put in the other recorded
-  state directories. A state directory where `telemetry off` itself was run
-  stays off until `telemetry on` is run with it, and `on` names every such
-  directory it finds, as well as any whose copy it could not remove; it says
-  processes can count again only with those exceptions.
+  state directories. A state directory other than `~/.sannr` where
+  `telemetry off` itself was run stays off until `telemetry on` is run with
+  it; `~/.sannr` itself is lifted by `on` run in any state directory of the
+  home. `on` names every directory it leaves off, as well as any whose copy it
+  could not remove, and says processes can count again only with those
+  exceptions. `off` and `on` for one home take turns: run at the same moment,
+  one finishes before the other changes anything, and the result is what the
+  later one printed. The exception: `off` never waits more than two seconds,
+  so if `on` is held up longer by a send in progress, `off` goes ahead, and
+  some directories can be left off after `on` said they were on (never the
+  other way round); `telemetry status` shows each one's state.
 
 ## Where it lives
 
 The setting is `~/.sannr/telemetry.json` (or `$SANNR_HOME/telemetry.json`),
-beside the machine usage log, never in a repository. Unsent counts and the
+beside the machine usage log. With no home directory in the environment
+there is no setting at all (see above), so it is never put in a project by an
+empty `HOME`; only a `SANNR_HOME` that names a project directory puts it
+there. Unsent counts and the
 saved documents are under `~/.sannr/telemetry/`. On macOS and Linux, files Sannr
 creates there are mode 0600 in 0700 directories; an existing directory keeps
 its mode. If the setting cannot be read or written (a damaged file, a
