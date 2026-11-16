@@ -71,6 +71,16 @@ function machine(t, { project = 'project', stateInHome = false } = {}) {
   writeFileSync(mode, 'accept');
   writeFileSync(clock, String(START - Date.now()));
   writeFileSync(preload, `import { appendFileSync, readFileSync } from 'node:fs';
+import os from 'node:os';
+import { syncBuiltinESMExports } from 'node:module';
+// A process started with no home directory falls back to the account's real
+// home; a test that starts one points that fallback at a temporary directory.
+if (process.env.TEST_FALLBACK_HOME) {
+  const fallback = process.env.TEST_FALLBACK_HOME, userInfo = os.userInfo;
+  os.homedir = () => fallback;
+  os.userInfo = (...args) => ({ ...userInfo(...args), homedir: fallback });
+  syncBuiltinESMExports();
+}
 const RealDate = Date;
 const offset = () => Number(readFileSync(${JSON.stringify(clock)}, 'utf8'));
 globalThis.Date = class extends RealDate {
@@ -538,8 +548,12 @@ test('A14a: the pointer block connect writes and the request skill say what "opt
 // --- USE-1-09 -------------------------------------------------------------------
 // The server is killed when the test ends, passed or failed, and every wait
 // for a reply has a deadline, so a broken behavior fails instead of hanging.
-function mcp(t, m, extraEnv = {}) {
-  const child = spawn(process.execPath, [CLI, 'mcp', 'serve'], { cwd: m.root, env: { ...m.env, API_CONTEXT_DIR: m.root, ...extraEnv }, stdio: ['pipe', 'pipe', 'pipe'] });
+function mcp(t, m, extraEnv = {}, { unset = [], env: baseEnv = m.env } = {}) {
+  // `unset` names variables the server starts without, as a host that never
+  // passes them would start it (through env -u, which the test helper cannot fill).
+  const [command, args] = unset.length ? ['/usr/bin/env', [...unset.flatMap(name => ['-u', name]), process.execPath, CLI, 'mcp', 'serve']]
+    : [process.execPath, [CLI, 'mcp', 'serve']];
+  const child = spawn(command, args, { cwd: m.root, env: { ...baseEnv, API_CONTEXT_DIR: m.root, ...extraEnv }, stdio: ['pipe', 'pipe', 'pipe'] });
   const exited = new Promise(resolve => child.once('close', resolve));
   t.after(async () => { if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exited; } });
   const replies = new Map(), waiters = new Map();
@@ -1286,4 +1300,289 @@ test('USE-1-13: the contract is pinned, the destination is documented, the notic
       if (/anonymous/i.test(paragraph) && /usage|telemetry/i.test(paragraph))
         assert.match(paragraph, /link/i, `${path}: "anonymous" without saying the identifier links days: ${paragraph.slice(0, 120)}`);
   }
+});
+
+// --- Amendment 7 -------------------------------------------------------------------
+// Every file or directory whose name starts with telemetry or .telemetry under `root`.
+function telemetryFiles(root) {
+  const found = [];
+  const walk = dir => {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (/^\.?telemetry/.test(entry.name)) found.push(path);
+      if (entry.isDirectory() && !entry.isSymbolicLink()) walk(path);
+    }
+  };
+  walk(root);
+  return found.sort();
+}
+// Run the CLI with some variables removed from its environment altogether
+// (env -u), as a shell or host that never sets them would start it. The test
+// helper fills HOME into a hand-built environment, so this is the only way to
+// start a test child with no HOME at all.
+function runUnset(m, unset, args, env = {}) {
+  const started = performance.now();
+  const child = spawn('/usr/bin/env', [...unset.flatMap(name => ['-u', name]), process.execPath, CLI, ...args],
+    { cwd: m.root, env: { ...m.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '', stderr = '';
+  child.stdout.on('data', chunk => stdout += chunk);
+  child.stderr.on('data', chunk => stderr += chunk);
+  const timer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', code => { clearTimeout(timer); resolve({ code, stdout, stderr, ms: performance.now() - started }); });
+  });
+}
+// The ways an environment names no home directory, each with the account's
+// fallback home pointed at a temporary directory.
+function noHomeVariants() {
+  const variants = [['HOME empty', { HOME: '', USERPROFILE: '' }, []], ['HOME relative', { HOME: 'relative-home', USERPROFILE: 'relative-home' }, []]];
+  if (process.platform !== 'win32') variants.unshift(['HOME unset', {}, ['HOME', 'USERPROFILE']]);
+  return variants;
+}
+
+test('A17e: with no home directory in the environment nothing is counted, sent, shown or written, and status says why', async t => {
+  for (const [label, homeEnv, unset] of noHomeVariants()) {
+    for (const stateDir of ['set', 'unset']) {
+      const m = machine(t);
+      const fallback = join(m.parent, 'fallback-home');
+      mkdirSync(fallback);
+      const env = { ...homeEnv, TEST_FALLBACK_HOME: fallback, ...(stateDir === 'unset' ? { [HOME_ENV_NAME]: '' } : {}) };
+      const go = args => runUnset(m, unset, args, env);
+      const what = `${label}, SANNR_HOME ${stateDir}`;
+      const first = await go(['--version']);
+      assert.equal(first.code, 0, `${what}: ${first.stderr}`);
+      assert.doesNotMatch(first.stderr, NOTICE, `${what}: the notice was shown`);
+      await go(['stacks', '--json']);
+      m.advance(25);
+      await go(['map', '.', '--text', '--no-execute']);
+      await go(['stacks', '--json']);
+      const status = json(await go(['telemetry', 'status', '--json']));
+      assert.equal(status.state, 'off', what);
+      assert.equal(status.reason.source, 'no_home', what);
+      assert.match((await go(['telemetry', 'status'])).stdout, /names no home directory/, what);
+      assert.equal(json(await go(['telemetry', 'show', '--json'])).body, null, `${what}: show built a document`);
+      for (const command of ['off', 'on', 'reset']) {
+        const result = await go(['telemetry', command, '--json']);
+        assert.equal(result.code, 1, `${what}: telemetry ${command} exited ${result.code}`);
+        assert.match(result.stdout + result.stderr, /TELEMETRY_NO_HOME/, what);
+      }
+      await m.settle();
+      assert.deepEqual(m.calls(), [], `${what}: something was sent`);
+      assert.deepEqual(telemetryFiles(m.parent), [], `${what}: telemetry state was written`);
+    }
+  }
+});
+
+test('A17e: an MCP host that starts the server with no home directory is not counted', async t => {
+  for (const [label, homeEnv, unset] of noHomeVariants()) {
+    const m = machine(t);
+    const fallback = join(m.parent, 'fallback-home');
+    mkdirSync(fallback);
+    // A registration's environment: no HOME, the state directory it names.
+    const env = { PATH: process.env.PATH, [HOME_ENV_NAME]: m.state, [TELEMETRY_CHECKOUT_ENV_NAME]: ROOT, [TELEMETRY_ENV_NAME]: '', DO_NOT_TRACK: '',
+      NODE_OPTIONS: m.env.NODE_OPTIONS, TEST_FALLBACK_HOME: fallback, ...homeEnv };
+    const server = mcp(t, m, {}, { unset, env });
+    await server.call(1, { method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test' } } });
+    const tool = { method: 'tools/call', params: { name: 'api_saved_requests', arguments: { action: 'list' } } };
+    const reply = (await server.call(2, tool)).msg;
+    assert.equal(reply.result.content.filter(block => NOTICE.test(block.text)).length, 0, `${label}: the notice was relayed`);
+    await server.call(3, tool);
+    await server.close();
+    m.advance(25);
+    const later = mcp(t, m, {}, { unset, env });
+    await later.call(1, { method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test' } } });
+    await later.call(2, tool);
+    await later.close();
+    await m.settle();
+    assert.deepEqual(m.calls(), [], `${label}: something was sent`);
+    assert.deepEqual(telemetryFiles(m.parent), [], `${label}: telemetry state was written`);
+  }
+});
+
+test('A17e: connect and doctor, which starts the registered server, turn nothing on', async t => {
+  // Off recorded: connect, then doctor probing the server it registered.
+  const m = machine(t);
+  await gitInit(m.root);
+  json(await m.run(['telemetry', 'off', '--json']));
+  const before = telemetryFiles(m.parent);
+  assert.equal((await m.run(['connect', '--json'])).code, 0);
+  const doctor = json(await m.run(['doctor', '--offline', '--json']));
+  assert.match(JSON.stringify(doctor), /MCP initialize responded/, 'doctor did not start the registered server');
+  m.advance(25);
+  await m.run(['doctor', '--offline', '--json']);
+  await m.settle();
+  assert.equal(json(await m.run(['telemetry', 'status', '--json'])).state, 'off');
+  assert.deepEqual(m.calls(), []);
+  assert.deepEqual(telemetryFiles(m.parent), before, 'connect or doctor changed the telemetry state');
+  // No home: the same commands write no telemetry state anywhere.
+  for (const [label, homeEnv, unset] of noHomeVariants()) {
+    const n = machine(t);
+    await gitInit(n.root);
+    const fallback = join(n.parent, 'fallback-home');
+    mkdirSync(fallback);
+    const env = { ...homeEnv, TEST_FALLBACK_HOME: fallback };
+    await runUnset(n, unset, ['connect', '--json'], env);
+    n.advance(25);
+    await runUnset(n, unset, ['doctor', '--offline', '--json'], env);
+    await n.settle();
+    assert.deepEqual(n.calls(), [], `${label}: something was sent`);
+    assert.deepEqual(telemetryFiles(n.parent), [], `${label}: telemetry state was written`);
+  }
+});
+
+test('A5l: the MCP server and the CLI each record their state directory, also when the list was lost', async t => {
+  const m = machine(t);
+  const user = join(m.home, `.${PRODUCT}`), list = join(user, 'telemetry.dirs');
+  const b = join(m.parent, 'other-state'), c = join(m.parent, 'third-state');
+  await m.run(['--version'], { env: { [HOME_ENV_NAME]: b } });
+  await m.run(['--version'], { env: { [HOME_ENV_NAME]: c } });
+  assert.deepEqual(readFileSync(list, 'utf8').split('\n').filter(Boolean).sort(), [b, c].sort());
+  rmSync(list);
+  // B is used again only by the MCP server, C only by the CLI.
+  const server = mcp(t, m, { [HOME_ENV_NAME]: b });
+  await server.call(1, { method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test' } } });
+  await server.call(2, { method: 'tools/call', params: { name: 'api_saved_requests', arguments: { action: 'list' } } });
+  await server.close();
+  assert.deepEqual(readFileSync(list, 'utf8').split('\n').filter(Boolean), [b], 'the MCP server did not record its directory');
+  await m.run(['stacks', '--json'], { env: { [HOME_ENV_NAME]: c } });
+  assert.deepEqual(readFileSync(list, 'utf8').split('\n').filter(Boolean), [b, c], 'the CLI did not record an existing directory again');
+  // So off marks both.
+  const off = json(await m.run(['telemetry', 'off', '--json'], { env: { [HOME_ENV_NAME]: user } }));
+  assert.deepEqual(off.other_directories.sort(), [b, c].sort());
+});
+
+test('A5l: off marks only listed directories that exist, creates none, writes nowhere else, and prunes the list', async t => {
+  const m = machine(t);
+  const user = join(m.home, `.${PRODUCT}`), list = join(user, 'telemetry.dirs'), b = join(m.parent, 'other-state');
+  await m.run(['--version'], { env: { [HOME_ENV_NAME]: b } });
+  const missing = join(m.parent, 'gone'), file = join(m.parent, 'a-file');
+  writeFileSync(file, 'x');
+  writeFileSync(list, ['relative/dir', '   ', ` ${b}`, missing, file, join(file, 'under'), b, ''].join('\n'));
+  const off = json(await m.run(['telemetry', 'off', '--json'], { env: { [HOME_ENV_NAME]: user } }));
+  assert.deepEqual(off.other_directories, [b]);
+  assert.equal(off.directory_list.readable, true);
+  assert.equal(existsSync(missing), false, 'off created a listed directory that did not exist');
+  assert.equal(readFileSync(file, 'utf8'), 'x');
+  assert.deepEqual(telemetryFiles(m.root), [], 'off wrote into the current directory');
+  assert.equal(existsSync(join(m.root, 'relative')), false);
+  assert.deepEqual(readFileSync(list, 'utf8').split('\n').filter(Boolean), [b], 'the list was not pruned');
+});
+
+test('A5l: the list has a fixed size, and off takes a bounded time whatever it holds', async t => {
+  const m = machine(t);
+  const user = join(m.home, `.${PRODUCT}`), list = join(user, 'telemetry.dirs');
+  await m.run(['--version'], { env: { [HOME_ENV_NAME]: user } });
+  // 300 directories that exist: the list keeps the newest 256.
+  const dirs = [];
+  for (let i = 0; i < 300; i++) { const dir = join(m.parent, 'many', `d${String(i).padStart(3, '0')}`); mkdirSync(dir, { recursive: true }); dirs.push(dir); }
+  writeFileSync(list, `${dirs.join('\n')}\n`);
+  const fresh = join(m.parent, 'fresh');
+  await m.run(['--version'], { env: { [HOME_ENV_NAME]: fresh } });
+  const kept = readFileSync(list, 'utf8').split('\n').filter(Boolean);
+  assert.equal(kept.length, 256, 'the list grew past its maximum');
+  assert.equal(kept.at(-1), fresh);
+  // 20,000 lines of directories that no longer exist, and one that does.
+  writeFileSync(list, `${Array.from({ length: 20_000 }, (_, i) => join(m.parent, 'deleted', `tmp${i}`)).join('\n')}\n${fresh}\n`);
+  const result = await m.run(['telemetry', 'off', '--json'], { env: { [HOME_ENV_NAME]: user } });
+  const off = json(result);
+  assert.deepEqual(off.other_directories, [fresh]);
+  assert.ok(result.stdout.length < 16_384, `off printed ${result.stdout.length} bytes`);
+  assert.ok(result.ms < 10_000, `off took ${result.ms} ms`);
+  assert.equal(existsSync(join(m.parent, 'deleted')), false, 'off created directories that no longer exist');
+  assert.deepEqual(readFileSync(list, 'utf8').split('\n').filter(Boolean), [fresh]);
+});
+
+test('A5l: when the list cannot be read, off says so and names the directories it did mark', async t => {
+  if (process.platform === 'win32' || process.getuid?.() === 0) { t.skip('needs POSIX permissions'); return; }
+  const m = machine(t);
+  const user = join(m.home, `.${PRODUCT}`), list = join(user, 'telemetry.dirs'), b = join(m.parent, 'other-state');
+  await m.run(['--version'], { env: { [HOME_ENV_NAME]: b } });
+  chmodSync(list, 0o000);
+  t.after(() => { try { chmodSync(list, 0o600); } catch { /* removed */ } });
+  const off = json(await m.run(['telemetry', 'off', '--json'], { env: { [HOME_ENV_NAME]: user } }));
+  assert.equal(off.ok, true);
+  assert.equal(off.directory_list.readable, false);
+  assert.deepEqual(off.other_directories, []);
+  chmodSync(list, 0o600);
+  await m.run(['telemetry', 'on', '--json'], { env: { [HOME_ENV_NAME]: user } });
+  chmodSync(list, 0o000);
+  const text = await m.run(['telemetry', 'off'], { env: { [HOME_ENV_NAME]: user } });
+  assert.match(text.stdout, /could not be read \(EACCES\), so no other directory was marked/);
+  assert.match(text.stdout, /stays off only while the home's marker is there/);
+});
+
+test('F6: off clears the identifier and counts of the other directories it marks at once', async t => {
+  const m = machine(t);
+  const user = join(m.home, `.${PRODUCT}`), b = join(m.parent, 'other-state'), inB = { [HOME_ENV_NAME]: b };
+  await m.run(['--version'], { env: inB });
+  m.advance(25);
+  await m.run(['--version'], { env: inB });
+  await m.settle();
+  await m.run(['map', '.', '--text', '--no-execute'], { env: inB });
+  assert.ok(m.readState(join(b, 'telemetry.json')).install, 'B has no identifier to clear');
+  assert.ok(existsSync(join(b, 'telemetry', 'counts.jsonl')));
+  const off = json(await m.run(['telemetry', 'off', '--json'], { env: { [HOME_ENV_NAME]: user } }));
+  assert.deepEqual(off.other_directories, [b]);
+  // Without B being used again.
+  assert.equal(m.readState(join(b, 'telemetry.json')).install, null, 'off left the identifier of a directory it marked');
+  assert.equal(existsSync(join(b, 'telemetry', 'counts.jsonl')), false, 'off left the counts of a directory it marked');
+});
+
+test('F8: off racing on across three directories ends as one of them says, and neither fails', async t => {
+  const m = machine(t);
+  const user = join(m.home, `.${PRODUCT}`), b = join(m.parent, 'other-state'), c = join(m.parent, 'third-state');
+  const inUser = { [HOME_ENV_NAME]: user }, inB = { [HOME_ENV_NAME]: b };
+  for (const dir of [user, b, c]) await m.run(['--version'], { env: { [HOME_ENV_NAME]: dir } });
+  const states = async () => Promise.all([user, b, c].map(async dir => json(await m.run(['telemetry', 'status', '--json'], { env: { [HOME_ENV_NAME]: dir } })).state));
+  for (let round = 0; round < 6; round++) {
+    json(await m.run(['telemetry', 'off', '--json'], { env: inUser }));
+    const [off, on] = await Promise.all([
+      new Promise(resolve => setTimeout(resolve, round * 7 % 20)).then(() => m.run(['telemetry', 'off', '--json'], { env: inUser })),
+      m.run(['telemetry', 'on', '--json'], { env: inB })]);
+    assert.equal(off.code, 0, `round ${round}: off failed: ${off.stdout}${off.stderr}`);
+    assert.ok(on.code === 0 || /TELEMETRY_STATE_BUSY/.test(on.stdout + on.stderr), `round ${round}: on failed: ${on.stdout}${on.stderr}`);
+    const end = await states();
+    const allOff = end.every(state => state === 'off'), allOn = end.every(state => state === 'on');
+    assert.ok(allOff || on.code === 0 && allOn, `round ${round}: ended ${end.join('/')}, which neither output describes`);
+  }
+});
+
+test('F6: each source-tree marker alone, and a marker path that cannot be read, make a source tree', async t => {
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-markers-')));
+  t.after(() => { try { chmodSync(join(parent, 'tree', 'scripts'), 0o700); } catch { /* absent */ } rmSync(parent, { recursive: true, force: true }); });
+  const tree = join(parent, 'tree');
+  for (const entry of ['bin', 'lib', 'skill', 'stacks', 'server.mjs', 'package.json']) cpSync(join(ROOT, entry), join(tree, entry), { recursive: true });
+  // Written out, not imported, so a marker dropped from the code fails.
+  const markers = {
+    '.git file': () => writeFileSync(join(tree, '.git'), 'gitdir: ../elsewhere\n'),
+    '.git directory': () => mkdirSync(join(tree, '.git')),
+    'scripts/test-unit.mjs': () => { mkdirSync(join(tree, 'scripts')); writeFileSync(join(tree, 'scripts', 'test-unit.mjs'), ''); },
+    'test/telemetry.test.mjs': () => { mkdirSync(join(tree, 'test')); writeFileSync(join(tree, 'test', 'telemetry.test.mjs'), ''); },
+    'scripts/ unreadable': () => { mkdirSync(join(tree, 'scripts')); chmodSync(join(tree, 'scripts'), 0o000); },
+  };
+  const clear = () => { try { chmodSync(join(tree, 'scripts'), 0o700); } catch { /* absent */ }
+    for (const name of ['.git', 'scripts', 'test']) rmSync(join(tree, name), { recursive: true, force: true }); };
+  const go = (m, args) => new Promise(resolve => {
+    const child = spawn(process.execPath, [join(tree, 'bin', 'cli.mjs'), ...args], { cwd: m.root, env: m.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', c => stdout += c); child.stderr.on('data', c => stderr += c);
+    const timer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+    child.once('close', code => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+  });
+  const cases = Object.entries(markers).filter(([name]) => !(name === 'scripts/ unreadable' && (process.platform === 'win32' || process.getuid?.() === 0)));
+  for (const [name, make] of [['no marker', () => {}], ...cases]) {
+    clear(); make();
+    const m = machine(t);
+    delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+    const first = await go(m, ['--version']);
+    assert.equal(first.code, 0, `${name}: ${first.stderr}`);
+    if (name === 'no marker') { assert.match(first.stderr, NOTICE, 'a tree with no marker is an installed package'); continue; }
+    assert.doesNotMatch(first.stderr, NOTICE, `${name}: a tree with this marker alone counted`);
+    assert.equal(existsSync(m.state), false, `${name}: wrote telemetry state`);
+    assert.equal(JSON.parse((await go(m, ['telemetry', 'status', '--json'])).stdout).reason.source, 'checkout', name);
+  }
+  clear();
 });

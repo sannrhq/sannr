@@ -8,7 +8,7 @@ import './helpers/isolated-home.mjs';
 // that the rule itself fails for a file that breaks it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import childProcess from 'node:child_process';
+import childProcess, { spawnSync as namedSpawnSync, execFileSync as namedExecFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -19,9 +19,18 @@ import { executePhase, isolatedEnvironment } from '../scripts/test-unit.mjs';
 
 const TEST_DIR = fileURLToPath(new URL('./', import.meta.url));
 const HARNESSES = ['truthful.mjs', 'stress.mjs', 'check.mjs'];
+// The first import or re-export statement, read the way Node reads the file:
+// comments removed, statements spanning lines, `export … from` included.
+export function firstModuleSpecifier(source) {
+  const code = source.replace(/^#!.*/, '').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
+  const start = /^\s*(?:import|export)\b/m.exec(code);
+  if (!start) return null;
+  const rest = code.slice(start.index).trimStart();
+  const statement = /^(?:import\s*(['"])([^'"]+)\1|(?:import|export)\b[^;]*?\bfrom\s*(['"])([^'"]+)\3)/.exec(rest);
+  return statement ? statement[2] ?? statement[4] : null;
+}
 export function importsHelperFirst(source) {
-  const first = /^import\s[^;\n]*?['"]([^'"]+)['"]/m.exec(source);
-  return first?.[1] === './helpers/isolated-home.mjs';
+  return firstModuleSpecifier(source) === './helpers/isolated-home.mjs';
 }
 /** Every test file and harness in `directory` that does not import the helper first. */
 export function missingHelper(directory) {
@@ -40,8 +49,16 @@ test('A17d: the rule fails for the files the fourth audit wrote, and for a helpe
   writeFileSync(join(dir, 'zz-cli-join.test.mjs'), "import { spawnSync } from 'node:child_process';\nimport { join } from 'node:path';\nspawnSync(process.execPath, [join('..', 'bin', 'cli.mjs'), 'stacks'], { env: process.env });\n");
   writeFileSync(join(dir, 'zz-dynamic.test.mjs'), "const { loadRegistry, saveRegistry } = await import('../lib/registry.mjs');\nsaveRegistry(loadRegistry().registry);\n");
   writeFileSync(join(dir, 'zz-second.test.mjs'), "import test from 'node:test';\nimport './helpers/isolated-home.mjs';\n");
-  writeFileSync(join(dir, 'zz-good.test.mjs'), "import './helpers/isolated-home.mjs';\nimport test from 'node:test';\n");
-  assert.deepEqual(missingHelper(dir), ['zz-cli-join.test.mjs', 'zz-dynamic.test.mjs', 'zz-second.test.mjs']);
+  writeFileSync(join(dir, 'zz-good.test.mjs'), "#!/usr/bin/env node\n// a comment\n/* import './helpers/isolated-home.mjs'; */\nimport './helpers/isolated-home.mjs';\nimport test from 'node:test';\n");
+  // The fifth audit's layouts: a multi-line import, a re-export and a
+  // commented-out helper before the first real statement.
+  writeFileSync(join(dir, 'zz-multiline.test.mjs'), "import {\n  apiRequest,\n  runEnvelope,\n} from '../lib/client.mjs';\nimport './helpers/isolated-home.mjs';\n");
+  writeFileSync(join(dir, 'zz-reexport.test.mjs'), "export { HOME_ENV_NAME } from '../lib/brand.mjs';\nimport './helpers/isolated-home.mjs';\n");
+  writeFileSync(join(dir, 'zz-commented.test.mjs'), "// import './helpers/isolated-home.mjs';\n/*\nimport './helpers/isolated-home.mjs';\n*/\nimport test from 'node:test';\nimport './helpers/isolated-home.mjs';\n");
+  // The harness scripts are covered too.
+  writeFileSync(join(dir, 'truthful.mjs'), "import { spawn } from 'node:child_process';\n");
+  assert.deepEqual(missingHelper(dir), ['truthful.mjs', 'zz-cli-join.test.mjs', 'zz-commented.test.mjs', 'zz-dynamic.test.mjs',
+    'zz-multiline.test.mjs', 'zz-reexport.test.mjs', 'zz-second.test.mjs']);
 });
 
 test('A17d: in this process the home, state directory, usage log and npm cache are isolated and counting is off', () => {
@@ -79,6 +96,29 @@ test('A17d: a child started with a hand-built environment gets the isolated home
   // A test that sets a key itself, even to an empty string, keeps its value.
   assert.deepEqual(read(childProcess.spawnSync(process.execPath, probe, { env: { ...env, HOME: '/elsewhere', [TELEMETRY_ENV_NAME]: '' } }).stdout),
     { home: '/elsewhere', off: '', dnt: '1' });
+  // A key set to undefined is not set (Node drops it): it is filled (A17e).
+  assert.deepEqual(read(childProcess.spawnSync(process.execPath, probe, { env: { ...process.env, HOME: undefined, USERPROFILE: undefined, [TELEMETRY_ENV_NAME]: undefined } }).stdout),
+    { home: process.env.HOME, off: '0', dnt: '1' });
+  // Named ESM imports reach the wrapped functions too (syncBuiltinESMExports).
+  assert.equal(namedSpawnSync.isolatedHome, true, 'a named import of spawnSync is not the wrapped function');
+  assert.deepEqual(read(namedSpawnSync(process.execPath, probe, { env }).stdout), { home: process.env.HOME, off: '0', dnt: '1' });
+  assert.deepEqual(read(namedExecFileSync(process.execPath, probe, { env })), { home: process.env.HOME, off: '0', dnt: '1' });
+});
+
+test('A17d: a test process that inherits a usage-log path or state directory drops them', t => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'isolation-inherit-')));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const probe = join(dir, 'probe.mjs');
+  writeFileSync(probe, `import ${JSON.stringify(new URL('./helpers/isolated-home.mjs', import.meta.url).href)};\n`
+    + `process.stdout.write(JSON.stringify({ log: process.env.API_USAGE_LOG ?? null, state: process.env.${HOME_ENV_NAME} ?? null, home: process.env.HOME }));\n`);
+  const canary = join(dir, 'canary');
+  // A process that is not the helper's own (no mark for its pid) inheriting a canary home.
+  const result = childProcess.spawnSync(process.execPath, [probe], { env: { PATH: process.env.PATH, HOME: canary, USERPROFILE: canary, TEST_ISOLATED_HOME: '1',
+    API_USAGE_LOG: join(canary, 'usage.jsonl'), [HOME_ENV_NAME]: join(canary, 'state'), [TELEMETRY_ENV_NAME]: '', DO_NOT_TRACK: '' }, encoding: 'utf8' });
+  const seen = JSON.parse(result.stdout);
+  assert.equal(seen.log, null, 'an inherited API_USAGE_LOG was kept');
+  assert.equal(seen.state, null, 'an inherited SANNR_HOME was kept');
+  assert.ok(!seen.home.startsWith(canary), 'the inherited HOME was kept');
 });
 
 test('A17b: the runner gives every test process its own home, state directory, usage log and npm cache, with counting off', async t => {

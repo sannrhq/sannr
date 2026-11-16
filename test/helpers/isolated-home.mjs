@@ -12,6 +12,7 @@
 //    of node:child_process that starts a process (spawn, spawnSync, execFile,
 //    execFileSync, exec, execSync, fork) is wrapped, and an explicit `env`
 //    that does not name HOME, USERPROFILE, the off switch or DO_NOT_TRACK
+//    (or names one as undefined, which Node drops)
 //    gets this process's value for each; one that does not name SANNR_HOME or
 //    API_USAGE_LOG resolves them inside that HOME. A test that sets one of
 //    these keys itself, even to an empty string, keeps its own value: the
@@ -50,7 +51,8 @@ if (process.env[ISOLATED_HOME_MARK] !== String(process.pid)) {
  *  set itself filled from this process. */
 export function isolateEnvironment(env) {
   const out = { ...env };
-  for (const key of FILLED_KEYS) if (!Object.hasOwn(out, key) && process.env[key] !== undefined) out[key] = process.env[key];
+  // A key set to undefined is not set: Node drops it from the child's environment.
+  for (const key of FILLED_KEYS) if ((!Object.hasOwn(out, key) || out[key] === undefined) && process.env[key] !== undefined) out[key] = process.env[key];
   return out;
 }
 const isOptions = value => value !== null && typeof value === 'object' && !Array.isArray(value);
