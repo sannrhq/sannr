@@ -5751,6 +5751,7 @@ function cmdTelemetry(argv) {
           `${value.recorded.here && value.state_file !== value.user_state_file ? ` and in ${value.state_file}` : ""}` +
           `${value.other_directories.length ? `, and marked off in ${value.other_directories.length} other state director${value.other_directories.length === 1 ? "y" : "ies"} used with this home (${value.other_directories.join(", ")})` : ""}. ` +
           (value.unmarked_directories.length ? `These state directories could not be marked and stay off only while the home's marker is there: ${value.unmarked_directories.join(", ")}. ` : "") +
+          (value.directory_list.readable ? "" : `The list of other state directories (${value.directory_list.file}) could not be read (${value.directory_list.problem}), so no other directory was marked beyond those named here; any other state directory used with this home stays off only while the home's marker is there. `) +
           `It stays off until ${CLI_NAME} telemetry on; a process run with another home directory keeps its own setting.${tail}${cleared}` +
           (value.here_problem ? ` Off could not also be written in ${value.state_file} (${value.here_problem.message}); the record for the home covers it.` : "");
       } else if (value.scope === "directory") {
