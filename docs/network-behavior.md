@@ -71,9 +71,11 @@ and when it updates a stack imported earlier. It reads the source's files and
 never uses the base URLs or credentials they name. A local path involves no
 network. For a Git URL the only network use is your own `git`: Sannr prints
 `git fetch --depth 1 --no-tags -- <url> <ref>` on stderr, then runs it into a
-temporary directory and removes that directory when the command ends. `git`
-uses the transport, proxy and credentials you have configured for it; Sannr
-downloads no archive itself. Only `https`, `ssh` and `file` URLs are fetched,
+temporary bare repository and removes that directory when the command ends
+or is interrupted. Nothing is checked out, so no hook, filter or LFS download
+runs. `git` uses the transport, proxy and credentials you have configured for
+it, but not `GIT_DIR`, `GIT_WORK_TREE`, `GIT_CONFIG_*` or other variables that
+would point it at another repository; Sannr downloads no archive itself. Only `https`, `ssh` and `file` URLs are fetched,
 and a URL carrying a password, query or fragment is refused. See
 [stacks](stacks.md#import-a-stack-from-another-repository).
 

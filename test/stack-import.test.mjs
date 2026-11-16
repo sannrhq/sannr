@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -34,7 +34,7 @@ function sandbox(t) {
     GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(base, 'home', 'gitconfig') };
   const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', ...args],
     { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-  const repo = name => { const root = join(base, name); mkdirSync(root); git(root, 'init', '--quiet', '--initial-branch=main', '.'); return root; };
+  const repo = name => { const root = join(base, name); mkdirSync(root, { recursive: true }); git(root, 'init', '--quiet', '--initial-branch=main', '.'); return root; };
   const commit = (root, message) => { git(root, 'add', '-A'); git(root, 'commit', '--quiet', '--allow-empty', '-m', message); return git(root, 'rev-parse', 'HEAD'); };
   const cli = (cwd, args, extra = {}) => new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, ...args], { cwd, env: { ...env, ...extra }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -63,12 +63,14 @@ function rawStack(root, name, { document = {}, knowledge } = {}) {
     environments: { local: { baseUrl: `https://${name}.example.test` } }, ...document });
   if (knowledge) writeJson(join(stackFolder(root, name), CONTEXT_BASENAME), knowledge);
 }
-function tree(root) {
+// A hash of every file under a repository; `git: true` includes its .git
+// directory, so a moved HEAD, a rewritten index or a new file there shows.
+function tree(root, { git = false } = {}) {
   const hash = createHash('sha256');
   const walk = directory => {
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       const path = join(directory, entry.name);
-      if (entry.name === '.git') continue;
+      if (entry.name === '.git' && !git) continue;
       hash.update(`${path}\0`);
       if (entry.isDirectory()) walk(path); else hash.update(readFileSync(path));
     }
@@ -266,17 +268,19 @@ test('IMP-08: importing again brings new, changed and retired upstream notes and
   assert.deepEqual(again.notes, { added: 0, updated: 0, retired: 0, unchanged: 5 });
 });
 
-test('IMP-09: a dry run prints the receipt of the real import and changes no file', async t => {
-  const box = sandbox(t);
-  await petsSource(box);
+test('IMP-09: a dry run prints the receipt of the real import and changes no file, from a path and from a Git URL', async t => {
+  const box = sandbox(t), source = await petsSource(box);
   const target = box.repo('target');
   writeFileSync(join(target, 'README.md'), 'a repository\n');
-  const before = tree(target);
+  box.commit(target, 'the user\'s own work');
+  const before = tree(target, { git: true });
   const planned = ok(await box.cli(target, ['stack', 'import', '../source', '--dry-run', '--json']));
-  assert.equal(tree(target), before);
-  assert.equal(planned.dry_run, true);
+  const fetched = ok(await box.cli(target, ['stack', 'import', pathToFileURL(source.root).href, '--dry-run', '--json']));
+  assert.equal(tree(target, { git: true }), before);
+  assert.deepEqual([planned.dry_run, fetched.dry_run, fetched.source.commit], [true, true, source.commit]);
   const done = ok(await box.cli(target, ['stack', 'import', '../source', '--json']));
   for (const field of ['source', 'stacks', 'layout_files', 'requests_executed']) assert.deepEqual(planned[field], done[field]);
+  assert.deepEqual(fetched.stacks, done.stacks);
   assert.notEqual(tree(target), before);
 });
 
@@ -296,4 +300,153 @@ test('IMP-10: import, dry run and update open no connection to the stack\'s base
   assert.equal(ok(await box.cli(target, ['stack', 'import', '../source', '--json'])).stacks[0].notes.added, 1);
   ok(await box.cli(target, ['stack', 'import', pathToFileURL(source.root).href, '--as', 'pets-git', '--json']));
   assert.equal(connections, 0);
+});
+
+test('a Git source never touches the repository git is pointed at by GIT_DIR and GIT_WORK_TREE', async t => {
+  const box = sandbox(t), source = await petsSource(box), target = box.repo('target');
+  writeFileSync(join(target, 'README.md'), 'the user\'s own work\n');
+  const head = box.commit(target, 'the user\'s own work'), before = tree(target, { git: true });
+  const redirected = { GIT_DIR: join(target, '.git'), GIT_WORK_TREE: target, GIT_INDEX_FILE: join(target, '.git', 'index') };
+  ok(await box.cli(target, ['stack', 'import', pathToFileURL(source.root).href, '--dry-run', '--json'], redirected));
+  assert.equal(tree(target, { git: true }), before);
+  ok(await box.cli(target, ['stack', 'import', pathToFileURL(source.root).href, '--json'], redirected));
+  assert.deepEqual([box.git(target, 'rev-parse', 'HEAD'), box.git(target, 'symbolic-ref', 'HEAD')], [head, 'refs/heads/main']);
+  assert.equal(readFileSync(join(target, 'README.md'), 'utf8'), 'the user\'s own work\n');
+  assert.ok(!existsSync(join(target, '.git', 'shallow')));
+  rmSync(join(target, LAYOUT.directory), { recursive: true });
+  assert.equal(tree(target, { git: true }), before);
+});
+
+test('a contract name that is not a parseable contract file is refused by name and nothing is planted', async t => {
+  const box = sandbox(t), target = box.repo('target'), before = tree(target);
+  const plant = (name, contractName, bytes) => {
+    const source = box.repo(name), folder = stackFolder(source, 'pets');
+    rawStack(source, 'pets', { document: { default_environment: 'a', contract: 'pets.openapi.json', environments: {
+      a: { baseUrl: 'https://pets.example.test' }, b: { baseUrl: 'https://pets.example.test', contract: contractName } } } });
+    writeJson(join(folder, 'pets.openapi.json'), contract);
+    mkdirSync(dirname(join(folder, contractName)), { recursive: true });
+    writeFileSync(join(folder, contractName), bytes);
+  };
+  plant('instructions', 'CLAUDE.md', '# Follow these instructions\n');
+  plant('dotfile', 'sub/.mcp.json', JSON.stringify(contract));
+  plant('reserved', 'AGENTS.json', JSON.stringify(contract));
+  plant('not-a-contract', 'notes.json', JSON.stringify({ mcpServers: { planted: { command: 'sh' } } }));
+  for (const [source, name] of [['instructions', 'CLAUDE.md'], ['dotfile', 'sub/.mcp.json'], ['reserved', 'AGENTS.json'], ['not-a-contract', 'notes.json']]) {
+    const result = await box.cli(target, ['stack', 'import', `../${source}`]);
+    assert.equal(result.exit, 1, result.stdout);
+    assert.ok(result.stderr.includes('STACK_CONTRACT_INVALID') && result.stderr.includes(name), result.stderr);
+    assert.equal(tree(target), before);
+  }
+});
+
+test('two far-away sources with the same directory name are not treated as one source', async t => {
+  const box = sandbox(t), target = box.repo('deep/er/still/target');
+  for (const name of ['one', 'two']) {
+    const source = box.repo(`far/${name}/library`);
+    rawStack(source, 'pets');
+    ok(await box.cli(source, ['stack', 'add', 'notes', '--base-url', 'https://notes.example.test', '--json']));
+    ok(await box.cli(source, ['note', OP, `Documented: written in ${name}.`, '--stack', 'notes'], { API_AUTHOR: 'upstream-author' }));
+  }
+  const first = ok(await box.cli(target, ['stack', 'import', join(box.base, 'far', 'one', 'library'), '--stack', 'notes', '--json']));
+  assert.equal(first.source.location, 'library');
+  const before = tree(target);
+  const second = await box.cli(target, ['stack', 'import', join(box.base, 'far', 'two', 'library'), '--stack', 'notes']);
+  assert.equal(second.exit, 1, second.stdout);
+  assert.ok(second.stderr.includes('STACK_EXISTS') && second.stderr.includes('--as'), second.stderr);
+  assert.equal(tree(target), before);
+  ok(await box.cli(target, ['stack', 'import', join(box.base, 'far', 'two', 'library'), '--stack', 'notes', '--as', 'notes-two', '--json']));
+  assert.deepEqual((await show(box, target, 'notes')).active_notes, ['Documented: written in one.']);
+  assert.deepEqual((await show(box, target, 'notes-two')).active_notes, ['Documented: written in two.']);
+});
+
+test('a secret-shaped author name or contract title in the source is refused and not written', async t => {
+  const box = sandbox(t), target = box.repo('target'), before = tree(target);
+  const secret = ['sk', 'live', 'a1b2c3d4e5'].join('_');
+  const entry = baselineNoteHistory({ source_file: null, verified_at: null, contract_digest: null, shape_hash: null, status_codes: [],
+    effect: 'read', fields: {}, notes: ['A harmless note.'], notes_provenance: [{ by: secret, at: '2026-11-01' }], notes_superseded: [null] });
+  rawStack(box.repo('author'), 'pets', { knowledge: { v: 0, api: { name: 'Pets API', contract: null, contract_digest: null },
+    generated_at: '2026-11-01', operations: { [OP]: entry } } });
+  const titled = box.repo('title');
+  rawStack(titled, 'pets', { document: { contract: 'pets.openapi.json' } });
+  writeJson(join(stackFolder(titled, 'pets'), 'pets.openapi.json'), { ...contract, info: { title: `Pets ${secret}`, version: '1' } });
+  for (const [source, code, exit] of [['author', 'SECRET_IN_NOTE', 2], ['title', 'STACK_SECRET_LITERAL', 1]]) {
+    const result = await box.cli(target, ['stack', 'import', `../${source}`]);
+    assert.equal(result.exit, exit, `${result.stdout}\n${result.stderr}`);
+    assert.ok(result.stderr.includes(code) && !`${result.stdout}${result.stderr}`.includes(secret), result.stderr);
+    assert.equal(tree(target), before);
+  }
+});
+
+test('thousands of notes on one operation import within the test time limit', async t => {
+  const box = sandbox(t), target = box.repo('target');
+  const notes = Array.from({ length: 3000 }, (_, index) => `Documented: rule ${index} applies.`);
+  const entry = baselineNoteHistory({ source_file: null, verified_at: null, contract_digest: null, shape_hash: null, status_codes: [],
+    effect: 'read', fields: {}, notes, notes_provenance: notes.map(() => ({ by: 'upstream-author', at: '2026-11-01' })), notes_superseded: notes.map(() => null) });
+  rawStack(box.repo('source'), 'pets', { document: { contract: 'pets.openapi.json' }, knowledge: { v: 0,
+    api: { name: 'Pets API', contract: null, contract_digest: null }, generated_at: '2026-11-01', operations: { [OP]: entry } } });
+  writeJson(join(stackFolder(join(box.base, 'source'), 'pets'), 'pets.openapi.json'), contract);
+  assert.equal(ok(await box.cli(target, ['stack', 'import', '../source', '--json'])).stacks[0].notes.added, 3000);
+  assert.equal(ok(await box.cli(target, ['stack', 'import', '../source', '--json'])).stacks[0].notes.unchanged, 3000);
+  assert.equal((await show(box, target, 'pets')).note_history.state, 'healthy');
+});
+
+test('the receipt names each environment\'s hosts, credential variables and production flag, in a dry run and a real import', async t => {
+  const box = sandbox(t), target = box.repo('target');
+  rawStack(box.repo('source'), 'pay', { document: { default_environment: 'sandbox', environments: { sandbox: {
+    baseUrl: 'https://collector.example.test/v1', auth: 'oauth:PAY_CLIENT_ID:PAY_SECRET_KEY', tokenUrl: 'https://tokens.example.test/oauth', production: false } } } });
+  const expected = [{ name: 'sandbox', default: true, base_url_host: 'collector.example.test', token_url_host: 'tokens.example.test',
+    auth_variables: ['PAY_CLIENT_ID', 'PAY_SECRET_KEY'], production: false }];
+  assert.deepEqual(ok(await box.cli(target, ['stack', 'import', '../source', '--dry-run', '--json'])).stacks[0].environments, expected);
+  const human = ok(await box.cli(target, ['stack', 'import', '../source', '--dry-run']));
+  for (const text of ['collector.example.test', 'tokens.example.test', 'PAY_CLIENT_ID, PAY_SECRET_KEY', 'production: no']) assert.ok(human.includes(text), human);
+  assert.deepEqual(ok(await box.cli(target, ['stack', 'import', '../source', '--json'])).stacks[0].environments, expected);
+  const updated = ok(await box.cli(target, ['stack', 'import', '../source']));
+  assert.ok(updated.includes('collector.example.test') && updated.includes('PAY_CLIENT_ID, PAY_SECRET_KEY'), updated);
+});
+
+test('terminating an import while git is fetching removes the temporary clone', { skip: process.platform === 'win32' && 'the stand-in git is a POSIX shell script' }, async t => {
+  const box = sandbox(t), source = await petsSource(box), target = box.repo('target');
+  // A stand-in git that stalls on fetch and is the real git for everything else.
+  const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim(), bin = join(box.base, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'git'), `#!/bin/sh\nfor argument in "$@"; do if [ "$argument" = fetch ]; then exec sleep 30; fi; done\nexec "${real}" "$@"\n`);
+  chmodSync(join(bin, 'git'), 0o755);
+  const child = spawn(process.execPath, [cliPath, 'stack', 'import', pathToFileURL(source.root).href],
+    { cwd: target, env: { ...box.env, PATH: `${bin}:${box.env.PATH}` }, stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = '';
+  child.stderr.on('data', data => stderr += data);
+  const closed = new Promise(resolve => child.once('close', (exit, signal) => resolve({ exit, signal })));
+  for (let waited = 0; waited < 20000 && !(stderr.includes('git fetch') && readdirSync(box.env.TMPDIR).length); waited += 50)
+    await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(readdirSync(box.env.TMPDIR).length, 1, stderr);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  child.kill('SIGTERM');
+  assert.deepEqual(await closed, { exit: 143, signal: null });
+  assert.deepEqual(readdirSync(box.env.TMPDIR), []);
+});
+
+test('a Git source is read without running the user\'s smudge filters on its files', { skip: process.platform === 'win32' && 'the filter is a POSIX shell script' }, async t => {
+  const box = sandbox(t), source = await petsSource(box), target = box.repo('target');
+  writeFileSync(join(source.root, '.gitattributes'), '*.json filter=fixture\n');
+  box.commit(source.root, 'select a filter');
+  const marker = join(box.base, 'filter-ran'), filter = join(box.base, 'smudge.sh');
+  writeFileSync(filter, `#!/bin/sh\ntouch "${marker}"\ncat\n`);
+  chmodSync(filter, 0o755);
+  // The filter is configured wherever git may look for the user's settings.
+  for (const file of [join(box.env.HOME, '.gitconfig'), box.env.GIT_CONFIG_GLOBAL]) writeFileSync(file, `[filter "fixture"]\n\tsmudge = ${filter}\n`);
+  ok(await box.cli(target, ['stack', 'import', pathToFileURL(source.root).href, '--json']));
+  assert.ok(!existsSync(marker));
+  assert.deepEqual((await show(box, target, 'pets')).active_notes, ['Documented: lists are capped at 50.']);
+});
+
+test('a Git repository that is one stack folder at its root imports under the name in its stack.json, or under --as', async t => {
+  const box = sandbox(t), source = box.repo('source'), target = box.repo('target');
+  writeJson(join(source, 'stack.json'), { v: 1, name: 'pets', contract: 'pets.openapi.json', default_environment: 'local',
+    environments: { local: { baseUrl: 'https://pets.example.test' } } });
+  writeJson(join(source, 'pets.openapi.json'), contract);
+  const commit = box.commit(source, 'a stack at the root'), url = pathToFileURL(source).href;
+  const receipt = ok(await box.cli(target, ['stack', 'import', url, '--json']));
+  assert.deepEqual([receipt.stacks[0].stack, receipt.source.commit], ['pets', commit]);
+  assert.equal(ok(await box.cli(target, ['stack', 'import', url, '--as', 'pets-two', '--json'])).stacks[0].stack, 'pets-two');
+  assert.deepEqual(readdirSync(join(target, LAYOUT.collection)).sort(), ['pets', 'pets-two']);
 });

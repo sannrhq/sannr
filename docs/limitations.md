@@ -59,9 +59,11 @@ see [SUPPORT.md](../SUPPORT.md).
   changes the local `stack.json` or contract, so a contract that changed in
   the source is reported and has to be replaced by hand. A Git source is
   fetched over `https`, `ssh` or `file` only; `--ref` with a commit ID works
-  only where the server serves that commit. A local source far from the
-  repository is recorded by directory name alone, so two different sources
-  with the same directory name are treated as one. Import provenance on a
+  only where the server serves that commit. A local source more
+  than two directories above the repository is recorded by directory name
+  alone and can be imported once per name; a later import from it refuses
+  and names `--as` rather than update. Contracts are OpenAPI or Swagger
+  files ending in `.json`, `.yaml` or `.yml`. Import provenance on a
   note imported a second time through an intermediate repository names the
   intermediate repository only. Clients older than this command read an
   imported stack but do not mark it. The older grant-based context reads

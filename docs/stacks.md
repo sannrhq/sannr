@@ -162,8 +162,16 @@ The source is a local path or a Git URL. A path names a repository, its
 Git URL uses `https`, `ssh` (including the `user@host:path` spelling) or
 `file`; `--ref` names a branch, a tag or, where the server allows it, a commit,
 and defaults to the remote `HEAD`. Sannr runs your own `git` to fetch one
-commit into a temporary directory, prints that command on stderr before it
-runs, and removes the directory afterwards. Sannr downloads nothing itself.
+commit into a temporary bare repository, prints that command on stderr before
+it runs, and removes the directory afterwards, including when the command is
+interrupted or terminated. Nothing is checked out: the stack folders are read
+from git's object store, so no hook, smudge filter or LFS download runs on the
+source's files. The git child process does not inherit `GIT_DIR`,
+`GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_CONFIG_*` or any other `GIT_*`
+variable except the SSH, askpass, proxy and TLS settings, so an import run
+from a hook or `rebase --exec` cannot touch your own repository. Sannr
+downloads nothing itself. One stack folder, on disk or at the root of a Git
+repository, is named by its `stack.json`.
 
 A source with one stack imports it. With several, the command lists them,
 writes nothing and exits non-zero until you pass `--stack <name>` (repeatable)
@@ -173,14 +181,28 @@ as JSON: the source and its commit, and for each stack the files written, the
 note counts (`added`, `updated`, `retired`, `unchanged`) and what was not
 imported. Import, dry run and update send no API request.
 
+Every receipt, dry run included, lists each environment of the stack with the
+host its requests go to, the host of its `tokenUrl` if it has one, the names
+of the variables its credentials are read from and its `production` flag
+(`environments[].base_url_host`, `token_url_host`, `auth_variables`,
+`production`). Read it before using the stack: a source chooses those hosts,
+and a familiar variable name does not make the host yours.
+
 The source is untrusted data. Its `stack.json` passes the same checks as a
 local stack: an unknown key refuses by name (`STACK_KEY_UNKNOWN`), and so do a
 secret-shaped literal and a credential header. A contract must sit inside its
-own stack folder (`STACK_CONTRACT_OUTSIDE_PROJECT`). A symbolic link anywhere
-in the stack folder refuses (`STACK_UNSAFE_PATH`). Every note passes the note
-secret check; a secret-shaped note refuses with `SECRET_IN_NOTE` and exit 2
-without printing the value, and a malformed or changed note history refuses
-with exit 3. Any refusal leaves the repository unchanged. Nothing in a source
+own stack folder (`STACK_CONTRACT_OUTSIDE_PROJECT`). Every contract the stack
+names, for any environment, must end in `.json`, `.yaml` or `.yml` and parse
+as an OpenAPI or Swagger document with operations; a dotfile, a
+dot-directory, and a name reserved for agent instructions or tool
+configuration (`AGENTS`, `CLAUDE`, `mcp`, `package` and similar) refuse by name
+with `STACK_CONTRACT_INVALID`. No other file in the source folder is copied.
+A symbolic link anywhere in the stack folder refuses (`STACK_UNSAFE_PATH`).
+Every note passes the note secret check, and so do its author name, source
+reference and evidence metadata; a secret-shaped value refuses with
+`SECRET_IN_NOTE` and exit 2 without printing it. A secret-shaped contract
+title or path refuses with `STACK_SECRET_LITERAL`. A malformed or changed
+note history refuses with exit 3. Any refusal leaves the repository unchanged. Nothing in a source
 file is executed or followed as an instruction.
 
 What arrives: `stack.json` with its environments, base URLs and credential
@@ -201,13 +223,16 @@ date and the note's identity in the source. `show`, `context query`, request
 never mistaken for one written or observed here. `sannr stacks` marks the
 stack `imported from <source>`. The source is recorded as the Git URL without a
 login name, or as a path relative to this repository; a path more than two
-directories above the repository is recorded by its directory name alone. For
+directories above the repository is recorded by its directory name alone,
+which is a label and not an identity. For
 a local path the commit is the source repository's `HEAD`, read from its files;
 uncommitted changes in the source are imported and are not reflected in it.
 
 A name that already exists here and did not come from the same source refuses
-with `STACK_EXISTS` and names `--as`. Importing again from the same source is
-an update: new upstream notes are added, a note the author superseded replaces
+with `STACK_EXISTS` and names `--as`. So does any second import from a local
+source recorded by directory name only, because that name cannot show it is
+the same source; import from a Git URL or a nearby path to be able to update.
+Importing again from the same source is an update: new upstream notes are added, a note the author superseded replaces
 its imported predecessor, and a note the author retired is retired here; the
 old text stays in `show --history`. Notes written, observed or reviewed in this
 repository are never overwritten or dropped. A locally trusted imported note
@@ -221,7 +246,9 @@ After an import, existing managed blocks in `AGENTS.md` and `CLAUDE.md` are
 refreshed as they are after `note`; the receipt reports that result separately.
 The first knowledge write in a repository also creates `.sannr/README.md`,
 `.sannr/.gitignore` and `.sannr/layout.json`; the receipt lists them under
-`layout_files`. The MCP tool surface has no import action.
+`layout_files`. A new stack is installed whole or not at all: if a write fails
+part-way, the folder the import created is removed. The MCP tool surface has
+no import action.
 
 ## Account facts
 
