@@ -10,6 +10,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
 
 ## [Unreleased]
 
+- `stack import <source>` installs one or more stacks from another repository:
+  a local path (a repository, its stacks directory or one stack folder) or a
+  Git URL fetched with your own `git`, named on stderr before it runs.
+  `--stack` (repeatable) or `--all` chooses among several, `--as` renames one,
+  `--ref` picks a Git ref, `--dry-run` writes nothing and `--json` prints the
+  receipt. The source is validated as untrusted data; its contract, active
+  authored notes and stack facts arrive, and `envFile` paths, account facts,
+  evidence files, learned shapes and review decisions do not. Imported notes
+  keep the author's basis, date and source and carry an additive `imported`
+  provenance record (source, commit, import date) that `show`,
+  `context query`, request `known` blocks, managed instructions and `stacks`
+  print. Importing again from the same source is an update that adds, replaces
+  and retires upstream notes without touching local ones; an existing name
+  from elsewhere refuses and names `--as`. No API request is sent. Older
+  clients read an imported stack without the mark. See `docs/stacks.md`.
 - `view --open` on Windows hands the written page to PowerShell's `Start-Process`,
   the opener the Workbench already used (now shared in `lib/os-open.mjs`), instead
   of explorer.exe, which exits 1 after a successful open and so made every
