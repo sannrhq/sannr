@@ -62,8 +62,8 @@ see [SUPPORT.md](../SUPPORT.md).
   only where the server serves that commit. A local source more
   than two directories above the repository is recorded by directory name
   alone and can be imported once per name; a later import from it refuses
-  and names `--as` rather than update. Contracts are OpenAPI or Swagger
-  files ending in `.json`, `.yaml` or `.yml`. Import provenance on a
+  and names `--as` rather than update. Contract files must end in `.json`,
+  `.yaml` or `.yml`. Import provenance on a
   note imported a second time through an intermediate repository names the
   intermediate repository only. Clients older than this command read an
   imported stack but do not mark it. The older grant-based context reads

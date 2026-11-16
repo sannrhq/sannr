@@ -192,11 +192,12 @@ The source is untrusted data. Its `stack.json` passes the same checks as a
 local stack: an unknown key refuses by name (`STACK_KEY_UNKNOWN`), and so do a
 secret-shaped literal and a credential header. A contract must sit inside its
 own stack folder (`STACK_CONTRACT_OUTSIDE_PROJECT`). Every contract the stack
-names, for any environment, must end in `.json`, `.yaml` or `.yml` and parse
-as an OpenAPI or Swagger document with operations; a dotfile, a
-dot-directory, and a name reserved for agent instructions or tool
-configuration (`AGENTS`, `CLAUDE`, `mcp`, `package` and similar) refuse by name
-with `STACK_CONTRACT_INVALID`. No other file in the source folder is copied.
+names, for any environment, must end in `.json`, `.yaml` or `.yml` and be a
+contract `stack add --contract` accepts: the same reader, and at least one
+operation. A dotfile, a dot-directory, and a name reserved for agent
+instructions or tool configuration (`AGENTS`, `CLAUDE`, `mcp`, `package` and
+similar) refuse by name with `STACK_CONTRACT_INVALID`; the message tells the
+source's author what to rename. No other file in the source folder is copied.
 A symbolic link anywhere in the stack folder refuses (`STACK_UNSAFE_PATH`).
 Every note passes the note secret check, and so do its author name, source
 reference and evidence metadata; a secret-shaped value refuses with
@@ -224,7 +225,7 @@ never mistaken for one written or observed here. `sannr stacks` marks the
 stack `imported from <source>`. The source is recorded as the Git URL without a
 login name, or as a path relative to this repository; a path more than two
 directories above the repository is recorded by its directory name alone,
-which is a label and not an identity. For
+which is a label and not an identity (`imported_from.exact` is `false`). For
 a local path the commit is the source repository's `HEAD`, read from its files;
 uncommitted changes in the source are imported and are not reflected in it.
 
@@ -236,8 +237,9 @@ Importing again from the same source is an update: new upstream notes are added,
 its imported predecessor, and a note the author retired is retired here; the
 old text stays in `show --history`. Notes written, observed or reviewed in this
 repository are never overwritten or dropped. A locally trusted imported note
-is not overturned without a run: the upstream change arrives beside it and the
-receipt lists it under `held`. An imported note that is no longer active in
+is not overturned without a run: the upstream change arrives beside it (a
+retirement then names the local note's identity) and every import lists the
+trusted note under `held` until it is resolved here. An imported note that is no longer active in
 the source and has no replacement there is left alone and listed under
 `no_longer_upstream`. An update changes neither the local `stack.json` nor the
 local contract; a contract that changed in the source is named in the receipt.
@@ -246,8 +248,12 @@ After an import, existing managed blocks in `AGENTS.md` and `CLAUDE.md` are
 refreshed as they are after `note`; the receipt reports that result separately.
 The first knowledge write in a repository also creates `.sannr/README.md`,
 `.sannr/.gitignore` and `.sannr/layout.json`; the receipt lists them under
-`layout_files`. A new stack is installed whole or not at all: if a write fails
-part-way, the folder the import created is removed. The MCP tool surface has
+`layout_files`. A new stack is installed whole or not at all. Its folder is
+created by the import and must not exist beforehand, even empty; if a write
+fails part-way, only the files and folders the import made are removed. When
+one of several stacks cannot be written the run stops: the receipt lists the
+stacks already in place, which stay, and a named error on stderr gives the
+stack that failed (`failed`, `not_attempted` in JSON); the exit is non-zero. The MCP tool surface has
 no import action.
 
 ## Account facts

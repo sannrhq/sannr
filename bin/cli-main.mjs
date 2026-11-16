@@ -1004,8 +1004,13 @@ async function cmdStackImport(argv) {
     receipt = importReceipt(plan, { dryRun });
     if (dryRun) receipt.pointers = { state: 'not-run', files: [] };
     else {
-      const { scope } = applyImport(plan);
-      receipt.pointers = withStackScope(scope, () => refreshNotePointers(root, 'Repeat the same import command; an unchanged import only retries the refresh.'));
+      const applied = applyImport(plan);
+      // A stack that could not be written stops the run. The receipt then
+      // covers only the stacks that are in place, and names the one that failed.
+      if (applied.failed) receipt = { ...importReceipt(plan, { written: applied.written }), ...(applied.written.length ? {} : { layout_files: [] }),
+        failed: applied.failed, not_attempted: applied.not_attempted };
+      receipt.pointers = applied.scope ? withStackScope(applied.scope, () => refreshNotePointers(root, 'Repeat the same import command; an unchanged import only retries the refresh.'))
+        : { state: 'not-run', files: [] };
     }
     opened.release();
   } catch (error) {
@@ -1037,8 +1042,14 @@ async function cmdStackImport(argv) {
       if (row.no_longer_upstream.length) lines.push(`  Imported notes no longer active in the source, left as they are: ${row.no_longer_upstream.length}`);
     }
     if (receipt.layout_files.length) lines.push(`${dryRun ? 'Would also write' : 'Also wrote'} the managed directory's own files: ${receipt.layout_files.join(', ')}`);
+    if (receipt.failed) lines.push(`Not written: ${[receipt.failed.stack, ...receipt.not_attempted].join(', ')}.`);
     lines.push(dryRun ? 'Dry run: nothing was written. No API request was sent.' : `No API request was sent. Managed instructions: ${receipt.pointers.state}.`);
     console.log(lines.join('\n'));
+  }
+  if (receipt.failed) {
+    console.error(JSON.stringify({ error: { code: receipt.failed.code, stack: receipt.failed.stack, message: `Stack '${receipt.failed.stack}' was not written: ${receipt.failed.message}`,
+      next: `${receipt.stacks.length ? `Already written and kept: ${receipt.stacks.map(row => row.stack).join(', ')}. ` : ''}Resolve the error and run the same import again; stacks already written are updated, not duplicated.` } }, null, 1));
+    process.exitCode = receipt.failed.code === 'SECRET_IN_NOTE' ? 2 : /^NOTE_/.test(receipt.failed.code) ? 3 : 1;
   }
   if (receipt.pointers.state === 'failed') process.exitCode = 1;
 }

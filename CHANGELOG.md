@@ -28,8 +28,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   into a bare temporary repository and never checked out, with `GIT_DIR` and
   the other redirecting `GIT_*` variables removed from git's environment; the
   receipt lists each environment's hosts, credential variable names and
-  production flag; every named contract must be a parseable OpenAPI or
-  Swagger file with an allowed name. See `docs/stacks.md`.
+  production flag; every named contract must be one `stack add --contract`
+  accepts, with an allowed file name. See `docs/stacks.md`.
 - `view --open` on Windows hands the written page to PowerShell's `Start-Process`,
   the opener the Workbench already used (now shared in `lib/os-open.mjs`), instead
   of explorer.exe, which exits 1 after a successful open and so made every

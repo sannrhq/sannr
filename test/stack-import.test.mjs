@@ -13,6 +13,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CONTEXT_BASENAME, HOME_ENV_NAME } from '../lib/brand.mjs';
 import { LAYOUT } from '../lib/layout.mjs';
 import { baselineNoteHistory } from '../lib/note-history.mjs';
+import { applyImport, openImportSource, parseImportSource, planImport } from '../lib/stack-import.mjs';
 
 const cliPath = join(fileURLToPath(new URL('../', import.meta.url)), 'bin', 'cli.mjs');
 const OP = 'GET /pets';
@@ -377,7 +378,7 @@ test('a secret-shaped author name or contract title in the source is refused and
   }
 });
 
-test('thousands of notes on one operation import within the test time limit', async t => {
+test('3,000 notes on one operation import once, read back unchanged on a second import and leave a healthy history', async t => {
   const box = sandbox(t), target = box.repo('target');
   const notes = Array.from({ length: 3000 }, (_, index) => `Documented: rule ${index} applies.`);
   const entry = baselineNoteHistory({ source_file: null, verified_at: null, contract_digest: null, shape_hash: null, status_codes: [],
@@ -449,4 +450,80 @@ test('a Git repository that is one stack folder at its root imports under the na
   assert.deepEqual([receipt.stacks[0].stack, receipt.source.commit], ['pets', commit]);
   assert.equal(ok(await box.cli(target, ['stack', 'import', url, '--as', 'pets-two', '--json'])).stacks[0].stack, 'pets-two');
   assert.deepEqual(readdirSync(join(target, LAYOUT.collection)).sort(), ['pets', 'pets-two']);
+});
+
+test('every contract shape stack add accepts imports from a stack built with stack add', async t => {
+  const box = sandbox(t), source = box.repo('source'), target = box.repo('target');
+  const shapes = {
+    'json-three': ['pets.openapi.json', JSON.stringify(contract)],
+    'yaml-swagger': ['two.yaml', 'swagger: 2.0\ninfo:\n  title: Two\n  version: "1"\nbasePath: /v1\npaths:\n  /pets:\n    get:\n      responses:\n        200:\n          description: ok\n'],
+    'yaml-three-one': ['three.yml', 'openapi: 3.1\ninfo:\n  title: Three\n  version: "1"\npaths:\n  /pets:\n    get:\n      responses:\n        "200":\n          description: ok\n'],
+    'yaml-anchors': ['anchors.yaml', 'openapi: 3.0.3\ninfo:\n  title: Anchors\n  version: "1"\n  description: |\n    A block scalar\n    over two lines.\nx-ok: &ok\n  description: ok\npaths:\n  /pets:\n    get:\n      responses:\n        "200": *ok\n    post:\n      responses:\n        "201": *ok\n'],
+  };
+  for (const [name, [file, text]] of Object.entries(shapes)) {
+    writeFileSync(join(source, file), text);
+    ok(await box.cli(source, ['stack', 'add', name, '--base-url', `https://${name}.example.test`, '--contract', file, '--json']));
+  }
+  const receipt = ok(await box.cli(target, ['stack', 'import', '../source', '--all', '--json']));
+  assert.deepEqual(receipt.stacks.map(row => row.stack).sort(), Object.keys(shapes).sort());
+  for (const row of receipt.stacks) {
+    assert.ok(row.operations > 0, row.stack);
+    assert.equal(row.operations, Object.keys(json(join(stackFolder(source, row.stack), CONTEXT_BASENAME)).operations).length, row.stack);
+  }
+});
+
+test('a stack folder that appears between planning and writing is left untouched, and earlier stacks in the run are reported as written', async t => {
+  const box = sandbox(t), source = box.repo('source'), target = box.repo('target');
+  for (const name of ['alpha', 'zeta']) rawStack(source, name);
+  const plan = planImport(target, await openImportSource(target, parseImportSource(source)), { all: true });
+  ok(await box.cli(target, ['stack', 'add', 'zeta', '--base-url', 'https://mine.example.test', '--json']));
+  ok(await box.cli(target, ['note', 'GET /mine', 'A local note.', '--stack', 'zeta'], { API_AUTHOR: 'local-dev' }));
+  const mine = tree(stackFolder(target, 'zeta'));
+  const applied = applyImport(plan);
+  assert.deepEqual([applied.written, applied.failed.stack, applied.failed.code], [['alpha'], 'zeta', 'STACK_EXISTS']);
+  assert.equal(tree(stackFolder(target, 'zeta')), mine);
+  assert.deepEqual((await show(box, target, 'zeta', 'GET /mine')).active_notes, ['A local note.']);
+  assert.ok(existsSync(join(stackFolder(target, 'alpha'), 'stack.json')));
+});
+
+test('a stack imported from a source recorded by name only is never updated from a nearer source of the same name', async t => {
+  const box = sandbox(t), target = box.repo('deep/er/still/target');
+  const build = async (root, text) => {
+    ok(await box.cli(root, ['stack', 'add', 'pets', '--base-url', 'https://pets.example.test', '--json']));
+    ok(await box.cli(root, ['note', OP, text, '--stack', 'pets'], { API_AUTHOR: 'upstream-author' }));
+  };
+  await build(box.repo('far/one/library'), 'Documented: written far away.');
+  ok(await box.cli(target, ['stack', 'import', join(box.base, 'far', 'one', 'library'), '--json']));
+  await build(box.repo('deep/er/still/target/library'), 'Documented: written nearby.');
+  const before = tree(target);
+  const second = await box.cli(target, ['stack', 'import', './library']);
+  assert.equal(second.exit, 1, second.stdout);
+  assert.ok(second.stderr.includes('STACK_EXISTS') && second.stderr.includes('--as'), second.stderr);
+  assert.equal(tree(target), before);
+});
+
+test('GIT_ALLOW_PROTOCOL set by the user still restricts the fetch of a Git source', async t => {
+  const box = sandbox(t), source = await petsSource(box), target = box.repo('target'), before = tree(target);
+  const result = await box.cli(target, ['stack', 'import', pathToFileURL(source.root).href], { GIT_ALLOW_PROTOCOL: 'https' });
+  assert.equal(result.exit, 1, result.stdout);
+  assert.ok(result.stderr.includes('STACK_IMPORT_GIT_FAILED'), result.stderr);
+  assert.equal(tree(target), before);
+  assert.deepEqual(readdirSync(box.env.TMPDIR), []);
+});
+
+test('an upstream retirement of a locally trusted note arrives beside it naming the local note, and is reported as held on every import', async t => {
+  const box = sandbox(t), source = await petsSource(box), target = box.repo('target');
+  const upstream = (await source.note(OP, 'Documented: sorting by name is supported.', '--alongside')).note_id;
+  ok(await box.cli(target, ['stack', 'import', '../source', '--json']));
+  const local = (await show(box, target, 'pets')).note_history.active.find(record => record.text.includes('sorting')).id;
+  ok(await box.cli(target, ['review', OP, '--stack', 'pets', '--note', local, '--decision', 'trusted', '--by', 'Alex', '--actor', 'person', '--json']));
+  await source.note(OP, 'Sorting was removed in v2.', '--retires', upstream, '--reason', 'removed', '--actor', 'agent', '--by', 'upstream-author');
+  for (const round of ['first', 'second']) {
+    const row = ok(await box.cli(target, ['stack', 'import', '../source', '--json'])).stacks[0];
+    assert.deepEqual(row.held, [{ target: OP, note_id: local, reason: 'LOCALLY_TRUSTED' }], round);
+    assert.deepEqual(row.no_longer_upstream, [], round);
+  }
+  const active = activeTexts(await show(box, target, 'pets'));
+  assert.ok(active.includes('Documented: sorting by name is supported.'));
+  assert.ok(active.includes(`Retired ${local} (removed): Sorting was removed in v2.`), active.join('\n'));
 });
