@@ -84,6 +84,19 @@ as any of its rows.
   as above. A request sent from the Workbench's Request view counts in
   `api_calls` like any other request, and only once the notice has been
   printed on this machine and telemetry is on.
+
+  The environment switches above hold per process, and the background
+  Workbench is one long-lived process: it keeps the environment of the
+  command or MCP server that started it. Started with `SANNR_TELEMETRY=0` or
+  `DO_NOT_TRACK=1`, it counts nothing until it stops. One that is already
+  running and was started without them keeps counting the requests sent from
+  its page, whatever the environment of a later `workbench open` or
+  `api_workbench` call that reuses it; stop it (`sannr workbench stop`) to
+  start it again under a new environment. `sannr telemetry off`, run with the
+  same home directory, covers a running Workbench at once: the Workbench checks the off
+  marker before every count.
+  `workbench serve --help` (or `-h`) is help, counted as `help` like any
+  other command's.
 - **A day later.** The first document is sent no earlier than 24 hours after
   the notice, measured by this machine's clock: a process whose clock was
   wrong when the notice was recorded (a container or virtual machine sharing
