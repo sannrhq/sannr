@@ -19,7 +19,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   requests. The contract ships as `lib/usage.schema.json`. Nothing is counted
   or sent until a one-time notice has been printed (in `connect` output, once
   on standard error, or as an extra text block in the MCP server's first tool
-  result), and the first document waits 24 hours after it. `sannr telemetry
+  result), and the first document waits 24 hours after it. A tool call made
+  by `mcp inspect`, whose result text nobody reads, carries no notice and
+  records none. `sannr telemetry
   off` (or telling the agent "opt out") writes an off marker that holds for
   every Sannr process run with the same home directory until `telemetry on`,
   marks at once every other state directory on that home's list (the CLI and
