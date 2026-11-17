@@ -3,6 +3,7 @@
 // These run the real CLI and MCP server as child processes against synthetic
 // checkouts. The system opener is a stand-in on PATH that acts as the opened
 // page; the only traffic is to the product's own loopback listeners.
+import './helpers/isolated-home.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';

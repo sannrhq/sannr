@@ -3,6 +3,7 @@
 // packaged page script runs against the real engine handlers over the
 // synthetic Parcel Lab, whose API is a loopback service in its own process
 // that logs every request it receives. No vendor host, no real home directory.
+import './helpers/isolated-home.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
