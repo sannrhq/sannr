@@ -127,7 +127,7 @@ test('the summary has the fixed shape, merges failures once per call and counts 
   assert.equal(summary.refusals, 1);
   assert.equal(summary.left_behind, 0);
   assert.equal(summary.line, `${PROSE_PRODUCT_TITLE}: 7 requests · 4 failed · 2 notes added, 1 corrected`);
-  assert.match(summary.open, /^Open in Workbench: .*workbench$/);
+  assert.match(summary.open, /^Open in Workbench: .*workbench open$/);
   assert.ok(![first, second, correction].some(id => JSON.stringify(summary).includes(id)), 'note identities stay in the ledger');
   assertNoValues(JSON.stringify(summary));
 
@@ -201,12 +201,12 @@ test('a process that made no call summarizes honestly as zero with no start time
 test('the Workbench hint advertises a verified portable CLI or a terminal instruction without inventing a bare executable', t => {
   const fixture = project(t);
   const empty = buildSessionSummary(fixture.root, { env: fixture.env });
-  assert.equal(empty.open, "Open in Workbench: use your installed CLI from a terminal in this repository to run workbench");
+  assert.equal(empty.open, "Open in Workbench: use your installed CLI in this repository to run workbench open");
   const shim = join(fixture.root, 'node_modules', '.bin', PRODUCT);
   mkdirSync(dirname(shim), { recursive: true });
   writeFileSync(shim, '#!/bin/sh\nexit 0\n'); chmodSync(shim, 0o755);
   const installed = buildSessionSummary(fixture.root, { env: fixture.env });
-  assert.equal(installed.open, `Open in Workbench: ${POINTER_CLI_NAME} workbench`);
+  assert.equal(installed.open, `Open in Workbench: ${POINTER_CLI_NAME} workbench open`);
   assert.ok(!installed.open.includes('--show'));
 });
 

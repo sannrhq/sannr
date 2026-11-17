@@ -120,7 +120,7 @@ test('api_workbench show never fails the turn: it returns the CLI command withou
   assert.match(absent.open, /^Open in Workbench: .*workbench --show last-session$/);
   assert.equal(absent.calls, 1);
   // The summary action keeps its verified invocation; only show names --show.
-  assert.match((await peer.call({ action: 'summary' })).open, /^Open in Workbench: .*workbench$/);
+  assert.match((await peer.call({ action: 'summary' })).open, /^Open in Workbench: .*workbench open$/);
   const elsewhere = `process:${randomUUID()}`;
   writeRun(root, { sessionId: elsewhere.slice(8) });
   assert.match((await peer.call({ action: 'show', session: elsewhere })).open, new RegExp(`workbench --show ${elsewhere}$`), 'another session is named by its id');

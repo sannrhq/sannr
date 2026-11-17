@@ -5569,7 +5569,7 @@ const EXIT_CODES = `Exit codes (note/history policy contract; request JSON error
   3   policy refused — a non-secret note or history policy blocked the operation`;
 
 const HELP = {
-  workbench: { blurb: 'open this repository’s local workbench; inspect, send, save and hand back changes', example: `${CLI_NAME} workbench` },
+  workbench: { blurb: 'open this repository’s local workbench; inspect, send, save and hand back changes', example: `${CLI_NAME} workbench open` },
   saved: { blurb: 'create, discover and run portable requests with local typed inputs', example: `${CLI_NAME} saved list` },
   migrate: { blurb: 'move legacy knowledge, environments and evidence into named API stacks',
              example: `${CLI_NAME} migrate --dry-run --json` },

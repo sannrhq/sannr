@@ -50,6 +50,49 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   anyone yet".
 - No released version wrote `telemetry.json` or `telemetry.off`; every record
   format before this release was a development build, so none is migrated.
+- `workbench open` opens a repository's Workbench in one step, with no
+  interactive terminal and no pairing code, so a coding agent can do it when
+  asked to "open the workbench". It starts a background Workbench for the
+  checkout, or reuses the one already running, and opens a connected page in
+  the default browser. Each checkout has its own, several can run at once, and
+  `--project <path>` names another local checkout. `workbench status` and
+  `workbench stop` report on and close one checkout's Workbench; it also stops
+  30 minutes after its last page request and after eight hours. The
+  `api_workbench` MCP tool gains `open` and `stop` for the repository its
+  server is bound to, and refuses another checkout by name
+  (`WORKBENCH_REPOSITORY_MISMATCH`) instead of opening it. Results name the
+  repository, whether the instance was created or reused, the plain local URL,
+  and the browser outcome, with an accepted opener request kept apart from a
+  page that actually connected. The installed skill now tells an agent how to
+  choose the repository from the conversation and to open it itself.
+- Security model of that path, which differs from the terminal launch: the
+  page connects with a one-use, two-minute launch grant passed in the URL
+  fragment and removed from the address bar at once; the tab keeps its session
+  token in `sessionStorage`, so a reload stays connected; several tabs can be
+  connected together; and any process running as you in the checkout can ask
+  for a launch, where the terminal launch needs a code typed by a person. The
+  plain URL still grants nothing. The control endpoint of a running Workbench
+  now sits in a directory only its owner can enter. `sannr workbench` with no
+  subcommand keeps its typed pairing code and is unchanged, except that its
+  refusal without a terminal now names `workbench open`. See
+  `docs/workbench-security.md`.
+- A session summary's `open` line now names `workbench open`, which needs no
+  pairing code, in place of the terminal launch.
+- The Workbench page gains two views beside Workbench and Map. **Activity**
+  lists the requests this machine's ledger retains, newest first, with the
+  caller, status and checks, a Failed filter, and the recorded response read
+  only on **Show response**. **Request** sends a request by hand: fields built
+  from the current contract, one explicit send through the same client and
+  policy as the CLI and the MCP tool, the masked response beside it, an
+  advanced structure editor, and save, rename and delete for saved requests.
+  Entered values stay in the tab and are never saved. The page still opens on
+  the Workbench view, and opening a view sends no request. See
+  `docs/workbench.md` and `docs/workbench-security.md`.
+- On the Workbench view, **Review decision** under a note records trust, a
+  dispute, a request for a run or a retirement to the ledger, as `review` does
+  headlessly: attributed to the author marker as a person, with a second
+  confirmation before a retirement, and no API request. A refusal writes
+  nothing and is shown with its code. Batches and supersession stay headless.
 - `view --open` on Windows hands the written page to PowerShell's `Start-Process`,
   the opener the Workbench already used (now shared in `lib/os-open.mjs`), instead
   of explorer.exe, which exits 1 after a successful open and so made every
