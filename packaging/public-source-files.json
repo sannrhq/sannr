@@ -645,6 +645,7 @@
     "test/workbench-review.test.mjs",
     "test/workbench-server.test.mjs",
     "test/workbench-session.test.mjs",
+    "test/workbench-usage.test.mjs",
     "test/yaml-r1a.test.mjs"
   ],
   "excluded_directories": [
