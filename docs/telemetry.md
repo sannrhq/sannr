@@ -71,12 +71,17 @@ as any of its rows.
   prints a notice: `connect` shows it in its output (and as
   `telemetry_notice` in `connect --json`); any other command prints it once
   as one line on standard error; the MCP server adds it as a separate, last
-  text block to its first tool result, for your agent to relay. A tool call
-  made by `sannr mcp inspect --execute`, which keeps no result text for
-  anyone to read, carries no notice and records none, so the next client is
-  still told. Standard output and JSON output are otherwise unchanged. Until
-  the notice has been printed, nothing is counted and no identifier exists. Sannr cannot know
-  whether anyone read it.
+  text block to its first tool result, for your agent to relay. A command
+  whose standard error (for `connect`, standard output) is the null device
+  (`2>/dev/null`, or a process started with its output discarded) neither
+  prints nor records the notice; the next command whose output can be read
+  does. The MCP server attaches no notice to a tool call made by
+  `sannr mcp inspect --execute`, which keeps no result text, and records
+  none; if a notice reaches the inspector anyway (through a proxy or gateway
+  that renamed it), `mcp inspect` prints the notice once on its own standard
+  error. Standard output and JSON output are otherwise unchanged. Until the
+  notice has been printed, nothing is counted and no identifier exists.
+  Sannr cannot know whether anyone read it.
 - **A day later.** The first document is sent no earlier than 24 hours after
   the notice, measured by this machine's clock: a process whose clock was
   wrong when the notice was recorded (a container or virtual machine sharing

@@ -9,7 +9,7 @@
 // No execution happens in `init`. `learn` executes GET/HEAD only, never writes.
 
 import { codePathWithheld, forOperationCode, withCodeLocations } from '../lib/code-locations.mjs';
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -100,7 +100,7 @@ function requireStackMigrationBeforeWriting(root) {
   if (refusal) die(refusal.code, refusal.message, refusal.command);
 }
 
-import { cliStart, takeConnectNotice, telemetryStatus, telemetryShow, telemetryOff, telemetryOn, telemetryReset, renderStatus, renderShow } from '../lib/telemetry.mjs';
+import { cliStart, noticeText, takeConnectNotice, telemetryStatus, telemetryShow, telemetryOff, telemetryOn, telemetryReset, renderStatus, renderShow } from '../lib/telemetry.mjs';
 import { LAYOUT, LEGACY_LAYOUT, layoutFor, planLayout, ensureLayout, inspectLayoutReadme, legacyLayoutEntries, migrateLayout, projectedLayoutFiles } from "../lib/layout.mjs";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -2930,7 +2930,14 @@ async function cmdMcp(argv) {
       if (!options.dryRun && report.registrations.some(row => row.code)) process.exitCode = 1;
       return;
     }
-    inspection = await inspectMcp(options);
+    // A tool result that carried the usage notice is shown here, once, after
+    // the inspection: this command keeps no result text (USE-1 A9.3).
+    let noticeShown = false;
+    inspection = await inspectMcp({ ...options, onNotice: () => {
+      if (noticeShown) return;
+      noticeShown = true;
+      process.once("exit", () => { try { writeSync(2, `${noticeText()}\n`); } catch { /* stderr closed */ } });
+    } });
   }
   catch (error) {
     const malformed = Number.isInteger(error.malformed_frames) ? `; malformed_frames: ${error.malformed_frames}` : "";
