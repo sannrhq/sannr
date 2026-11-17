@@ -19,7 +19,8 @@ import { delimiter, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { HOME_ENV_NAME, TELEMETRY_ENV_NAME, TOOL_NAME } from '../lib/brand.mjs';
-import { cliFeature, cliFeatureNames } from '../lib/telemetry.mjs';
+import { backgroundProcess, cliFeature, cliFeatureNames } from '../lib/telemetry.mjs';
+import { liveWorkbenchService, stopWorkbenchService } from '../lib/workbench-launch.mjs';
 import { SAVED_REQUEST_TOOL } from '../lib/saved-request-actions.mjs';
 import { WORKBENCH_AGENT_TOOL } from '../lib/workbench-agent-tools.mjs';
 import { NOTE_REVIEW_TOOL, NOTE_RETIRE_TOOL, NOTE_CONTEXT_TOOL } from '../lib/note-review-actions.mjs';
@@ -232,8 +233,13 @@ test('T4: workbench counts launches only; serve, status and stop have no feature
     [['workbench', '--no-open'], 'workbench'], [['workbench', '--session', 'status'], 'workbench'],
     [['workbench', 'serve', '--project', 'x'], null], [['workbench', 'status'], null], [['workbench', 'status', '--json'], null],
     [['workbench', 'stop'], null], [['workbench', 'stop', '--project', 'x'], null], [['workbench', '--help'], 'help'],
+    [['workbench', 'serve', '--help'], 'help'], [['workbench', 'serve', '-h'], 'help'], [['workbench', 'serve', '--project', 'x', '--help'], 'help'],
   ];
   for (const [argv, feature] of expected) assert.equal(cliFeature(argv), feature, argv.join(' '));
+  // Help for serve is read by a person: it is not the background process.
+  assert.equal(backgroundProcess(['workbench', 'serve', '--project', 'x']), true);
+  for (const argv of [['workbench', 'serve', '--help'], ['workbench', 'serve', '-h'], ['workbench', 'serve', '--project', 'x', '--help'], ['workbench', 'open']])
+    assert.equal(backgroundProcess(argv), false, argv.join(' '));
   const names = JSON.parse(readFileSync(join(ROOT, 'lib/usage-features.json'), 'utf8'));
   const mcpNames = [TOOL_NAME, SAVED_REQUEST_TOOL.name, WORKBENCH_AGENT_TOOL.name, NOTE_REVIEW_TOOL.name, NOTE_RETIRE_TOOL.name,
     NOTE_CONTEXT_TOOL.name, 'api_context', 'api_context_record'].map(name => `mcp_${name}`);
@@ -287,5 +293,87 @@ test('T6: with telemetry off recorded for the home, an open and its service writ
   await delay(300);
   assert.equal(m.record(), record, 'the open or its service changed the record');
   assert.deepEqual(m.lines(), []);
+  assert.deepEqual(m.blocked(), []);
+});
+
+// --- T8 -------------------------------------------------------------------------
+/** Start the background process itself, as the launcher does, and wait until
+ *  it answers. Readiness and stop are asked in this process, through the
+ *  library, so no CLI command of the test touches the usage state. */
+async function startServe(t, m) {
+  const proc = spawn(process.execPath, [m.CLI, 'workbench', 'serve', '--project', m.root], { cwd: m.root, env: m.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stderr = '';
+  proc.stderr.on('data', chunk => { stderr += chunk; });
+  const exited = new Promise(resolve => proc.once('close', resolve));
+  t.after(async () => { if (proc.exitCode === null && proc.signalCode === null) { proc.kill('SIGKILL'); await exited; } });
+  const until = Date.now() + 15_000;
+  while ((await liveWorkbenchService(m.root)).state !== 'running') {
+    if (Date.now() > until || proc.exitCode !== null) assert.fail(`the service did not start: ${stderr}`);
+    await delay(100);
+  }
+  return {
+    stderr: () => stderr,
+    stop: async () => {
+      assert.equal((await stopWorkbenchService(m.root)).state, 'stopped');
+      const timer = setTimeout(() => proc.kill('SIGKILL'), 10_000);
+      await exited; clearTimeout(timer);
+    },
+  };
+}
+const usageCalls = m => m.blocked().filter(line => JSON.parse(line).url.includes('/api/v1/usage'));
+
+test('T8: a service started directly takes no notice, counts nothing for its start and starts no send', { skip: noStandIn }, async t => {
+  await t.test('a home never told', async t => {
+    const m = await machine(t);
+    const serve = await startServe(t, m);
+    await delay(300);
+    assert.equal(m.record(), null, 'the service recorded a notice while running');
+    assert.deepEqual(m.lines(), []);
+    await serve.stop();
+    assert.doesNotMatch(serve.stderr(), NOTICE);
+    assert.equal(m.record(), null, 'a notice record exists after the service stopped');
+    assert.equal(existsSync(join(m.state, 'telemetry')), false, 'counts were written');
+    assert.deepEqual(m.blocked(), []);
+  });
+  await t.test('a home told more than a day ago, counts pending, a send due', async t => {
+    const m = await machine(t);
+    assert.match((await m.cli(['--version'])).stderr, NOTICE);
+    await m.cli(['--version']);
+    // Then told two days ago, as far as the record says: a send is due.
+    const told = JSON.parse(m.record());
+    told.noticed_at = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    writeFileSync(m.stateFile, `${JSON.stringify(told)}\n`);
+    const pending = readFileSync(join(m.state, 'telemetry', 'counts.jsonl'), 'utf8');
+    const record = m.record();
+    const serve = await startServe(t, m);
+    await delay(1500);
+    await serve.stop();
+    await delay(500);
+    assert.deepEqual(usageCalls(m), [], 'the service attempted a send');
+    assert.equal(existsSync(join(m.state, 'telemetry', 'sent')), false, 'the service prepared a document');
+    assert.equal(existsSync(join(m.state, 'telemetry', 'batch.json')), false, 'the service folded the counts for a send');
+    assert.equal(m.record(), record, 'the service recorded an attempt or changed the record');
+    assert.equal(readFileSync(join(m.state, 'telemetry', 'counts.jsonl'), 'utf8'), pending, 'the service counted its own start');
+    // Control: the same machine, a command a person runs, does start the due send.
+    await m.cli(['--version']);
+    const until = Date.now() + 15_000;
+    while (!usageCalls(m).length && Date.now() < until) await delay(100);
+    assert.equal(usageCalls(m).length, 1, 'the staged machine had no send due');
+    assert.equal(JSON.parse(m.record()).attempts, 1);
+  });
+});
+
+// --- T9 -------------------------------------------------------------------------
+test('T9: telemetry off run while a service is running stops it counting the requests sent from its page', { skip: noStandIn }, async t => {
+  const m = await machine(t);
+  await m.cli(['--version']);
+  assert.equal((await m.cli(['workbench', 'open', '--json'])).code, 0);
+  await requestThroughService(m);
+  assert.equal(m.apiCalls(), 1, 'the running service counted before off');
+  assert.equal((await m.cli(['telemetry', 'off'])).code, 0);
+  assert.equal(await serviceState(m), 'running', 'the service kept running through off');
+  await requestThroughService(m);
+  assert.deepEqual(m.lines(), []);
+  assert.equal(existsSync(join(m.state, 'telemetry', 'counts.jsonl')), false, 'a count file was left');
   assert.deepEqual(m.blocked(), []);
 });
