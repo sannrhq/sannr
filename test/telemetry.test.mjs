@@ -1750,7 +1750,8 @@ function sourceTreeCopy(t) {
 const telemetryRecords = dir => readdirSync(dir, { recursive: true }).filter(name => String(name).endsWith('telemetry.json'));
 
 test('A9 V1: a source tree inspecting an installed CLI (--version, and mcp with serve forgotten) on a home never told: no record', async t => {
-  for (const target of [['--version'], ['mcp']]) {
+  // Each target is its own subtest, so the second runs when the first fails (A10.4).
+  for (const target of [['--version'], ['mcp']]) await t.test(target.join(' '), async t => {
     const m = machine(t);
     delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
     const inspector = sourceTreeCopy(t), { cli } = installedCopy(t);
@@ -1758,10 +1759,12 @@ test('A9 V1: a source tree inspecting an installed CLI (--version, and mcp with 
     assert.doesNotMatch(result.stdout + result.stderr, NOTICE, target.join(' '));
     assert.equal(existsSync(join(m.state, 'telemetry.json')), false, `${target.join(' ')}: the notice was recorded with its stderr discarded`);
     assert.equal(existsSync(join(m.state, 'telemetry', 'counts.jsonl')), false, `${target.join(' ')}: counted`);
-  }
+  });
 });
 
 test('A9 V2: stderr (and stdout for connect) on the null device records nothing; the next readable run is told', async t => {
+  // Two subtests, so the connect case runs when the first fails (A10.4).
+  await t.test('stderr', async t => {
   const m = machine(t);
   delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
   const { cli } = installedCopy(t);
@@ -1772,7 +1775,10 @@ test('A9 V2: stderr (and stdout for connect) on the null device records nothing;
   const told = await runCli(cli, ['--version'], { cwd: m.root, env: m.env });
   assert.equal((told.stderr.match(new RegExp(NOTICE.source, 'g')) ?? []).length, 1, told.stderr);
   assert.equal(noticesRecorded(m.state), 1);
+  });
 
+  await t.test('connect stdout', async t => {
+  const { cli } = installedCopy(t);
   const c = machine(t);
   delete c.env[TELEMETRY_CHECKOUT_ENV_NAME];
   const connect = ['connect', '--base-url', 'http://127.0.0.1:9'];
@@ -1783,6 +1789,7 @@ test('A9 V2: stderr (and stdout for connect) on the null device records nothing;
   const shown = await runCli(cli, ['connect'], { cwd: c.root, env: c.env });
   assert.equal((shown.stdout.match(new RegExp(NOTICE.source, 'g')) ?? []).length, 1, `${shown.stdout}${shown.stderr}`);
   assert.equal(noticesRecorded(c.state), 1);
+  });
 });
 
 test('A9 V3 (guard): stderr as a pipe and as a file: the notice is written and recorded', async t => {
@@ -1858,4 +1865,52 @@ test('A9 V6: two initialize messages in one session: the last one decides', asyn
   await inspected.close();
   assert.equal(quiet.result.content.filter(block => NOTICE.test(block.text)).length, 0, 'the inspector, initialized last, got the notice');
   assert.equal(noticesRecorded(b.state), 0);
+});
+
+// --- Amendment 10: what the inspector drops, its own text once, another device ----
+test('A10 W1: connect (plain and --json) as the inspect target: the notice is on the inspector\'s stderr once, none on stdout', async t => {
+  for (const json of [false, true]) await t.test(json ? '--json' : 'plain', async t => {
+    const m = machine(t);
+    delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+    const inspector = sourceTreeCopy(t), { cli } = installedCopy(t);
+    const target = [process.execPath, cli, 'connect', '--base-url', 'http://127.0.0.1:9', ...(json ? ['--json'] : [])];
+    const result = await runCli(inspector, ['mcp', 'inspect', ...target], { cwd: m.root, env: m.env });
+    assert.equal((result.stderr.match(new RegExp(NOTICE.source, 'g')) ?? []).length, 1, result.stderr);
+    assert.doesNotMatch(result.stdout, NOTICE);
+    assert.equal(noticesRecorded(m.state), 1, 'connect did not run as the target');
+  });
+});
+
+test('A10 W2: two tool results carrying notice-like blocks: the inspector prints its own notice once and none of the server\'s bytes', async t => {
+  const m = machine(t);
+  delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const inspector = sourceTreeCopy(t);
+  const fake = join(m.parent, 'fake-server.mjs');
+  writeFileSync(fake, `const notice = 'Sannr telemetry: once a day Sannr sends usage counts to zqserver.invalid: ZQ SERVER BYTES';
+let buffer = '';
+const send = msg => process.stdout.write(JSON.stringify(msg) + '\\n');
+process.stdin.on('data', chunk => { buffer += chunk; const lines = buffer.split('\\n'); buffer = lines.pop();
+  for (const line of lines) { if (!line.trim()) continue; const msg = JSON.parse(line);
+    if (msg.method === 'initialize') send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: 'zqfake', version: '1' } } });
+    else if (msg.method === 'tools/list') send({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'one', inputSchema: { type: 'object' } }, { name: 'two', inputSchema: { type: 'object' } }] } });
+    else if (msg.method === 'tools/call') send({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'ok' }, { type: 'text', text: notice }] } });
+    else if (msg.id !== undefined) send({ jsonrpc: '2.0', id: msg.id, result: {} }); } });
+process.stdin.on('end', () => process.exit(0));
+`);
+  const result = await runCli(inspector, ['mcp', 'inspect', process.execPath, fake, '--execute', 'one', '--execute', 'two', '--execute-unsafe', '--json'], { cwd: m.root, env: m.env });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(json(result).measured.length, 2);
+  assert.equal((result.stderr.match(new RegExp(NOTICE.source, 'g')) ?? []).length, 1, result.stderr);
+  for (const bytes of ['ZQ SERVER BYTES', 'zqserver.invalid'])
+    assert.equal((result.stdout + result.stderr).includes(bytes), false, `the server's bytes (${bytes}) were printed`);
+});
+
+test('A10 W3: stderr on another character device (/dev/zero), home never told: the notice is recorded', async t => {
+  if (process.platform === 'win32') { t.skip('needs /dev/zero'); return; }
+  const m = machine(t);
+  delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const { cli } = installedCopy(t);
+  const fd = openSync('/dev/zero', 'w');
+  try { assert.equal((await runCli(cli, ['--version'], { cwd: m.root, env: m.env, stderr: fd })).code, 0); } finally { closeSync(fd); }
+  assert.equal(noticesRecorded(m.state), 1, 'a character device that is not the null device was treated as one');
 });
