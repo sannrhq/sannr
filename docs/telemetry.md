@@ -71,14 +71,17 @@ as any of its rows.
   prints a notice: `connect` shows it in its output (and as
   `telemetry_notice` in `connect --json`); any other command prints it once
   as one line on standard error; the MCP server adds it as a separate, last
-  text block to its first tool result, for your agent to relay. A command
-  whose standard error (for `connect`, standard output) is the null device
-  (`2>/dev/null`, or a process started with its output discarded) neither
-  prints nor records the notice; the next command whose output can be read
-  does. The MCP server attaches no notice to a tool call made by
-  `sannr mcp inspect --execute`, which keeps no result text, and records
-  none; if a notice reaches the inspector anyway (through a proxy or gateway
-  that renamed it), `mcp inspect` prints the notice once on its own standard
+  text block to its first tool result, for your agent to relay. On macOS
+  and Linux, a command whose standard error (for `connect`, standard output)
+  is the null device (`2>/dev/null`, or a process started with its output
+  discarded) neither prints nor records the notice; the next command whose
+  output can be read does. On Windows a stream sent to `NUL` is not
+  detected, so the notice is recorded there as before. The MCP server
+  attaches no notice to a tool call made by `sannr mcp inspect --execute`,
+  which keeps no result text, and records none; if a notice reaches the
+  inspector anyway (in a tool result, through a proxy or gateway that
+  renamed it, or in the output of a Sannr command such as `connect` given
+  as its target), `mcp inspect` prints the notice once on its own standard
   error. Standard output and JSON output are otherwise unchanged. Until the
   notice has been printed, nothing is counted and no identifier exists.
   Sannr cannot know whether anyone read it.
