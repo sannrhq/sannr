@@ -475,7 +475,8 @@ page and are removed when it stops. None of it changes API bindings, shared know
 the one ledger write is a note you save by hand.
 The workbench uses package-local assets and no account. The page itself sends
 nothing; the CLI's daily usage counts ([telemetry](telemetry.md)) count
-a workbench launch like any other command.
+each launch (`sannr workbench` or `workbench open`) once, and not `workbench
+status`, `workbench stop` or the background process an open starts.
 Explicit feedback continues to follow the existing
 [feedback-send policy](feedback.md). See
 [Workbench security](workbench-security.md) for how a page earns access on

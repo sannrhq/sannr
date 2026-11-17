@@ -24,7 +24,7 @@ with these nine fields and nothing else:
 | `arch` | `arm64`, `x64` or `other`. |
 | `node` | The Node.js major version. |
 | `since` | The UTC date of the previous document from this install, or `null`. |
-| `features` | How many times each Sannr command or MCP tool ran since the previous document. The names are fixed: every name that can ever be sent is in [`lib/usage-features.json`](../lib/usage-features.json), one per command (`connect`, `doctor`, `request`), the subcommand folded in where it is the feature (`suite_run`, `saved_run`, `stack_add`), and `mcp_<tool>` for each MCP tool call (`mcp_api_request`). A command or tool that has no name in that file is not counted. A count includes runs that failed and stops at 10,000. |
+| `features` | How many times each Sannr command or MCP tool ran since the previous document. The names are fixed: every name that can ever be sent is in [`lib/usage-features.json`](../lib/usage-features.json), one per command (`connect`, `doctor`, `request`), the subcommand folded in where it is the feature (`suite_run`, `saved_run`, `stack_add`), and `mcp_<tool>` for each MCP tool call (`mcp_api_request`). `workbench` counts launches: one for each `sannr workbench` (the terminal launch) and each `workbench open`; `workbench status` and `workbench stop` are not counted, and neither is the background Workbench process an open starts. An `api_workbench` tool call counts `mcp_api_workbench` once, whatever its action. A command or tool that has no name in that file is not counted. A count includes runs that failed and stops at 10,000. |
 | `api_calls` | How many requests Sannr executed against your APIs since the previous document, stopping at 1,000,000. Every request counts once when an answer came back, protocol requests included (GraphQL, JSON-RPC, gRPC, WebSocket); a request that follows redirects, or a paginated call, counts once; a request refused before sending or that got no answer is not counted. `doctor`'s setup probe and a feedback send are not counted. A program that uses this package as a library counts its requests the same way. A number only. |
 
 The features table is ordered by count: if a document would hold more than 64
@@ -75,6 +75,15 @@ as any of its rows.
   output and JSON output are otherwise unchanged. Until the notice has been
   printed, nothing is counted and no identifier exists. Sannr cannot know
   whether anyone read it.
+- **Not from the background Workbench.** `workbench open` and the
+  `api_workbench` tool's `open` start the repository's Workbench as a
+  background process whose output nobody reads. That process never shows or
+  records the notice, counts nothing for its own start and starts no send. On
+  a machine not yet told, the notice therefore comes from the `workbench open`
+  command (once, on its standard error) or from the MCP server's tool result,
+  as above. A request sent from the Workbench's Request view counts in
+  `api_calls` like any other request, and only once the notice has been
+  printed on this machine and telemetry is on.
 - **A day later.** The first document is sent no earlier than 24 hours after
   the notice, measured by this machine's clock: a process whose clock was
   wrong when the notice was recorded (a container or virtual machine sharing

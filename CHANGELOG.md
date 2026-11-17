@@ -40,6 +40,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   security pages say so; see `docs/telemetry.md`. `capabilities` lists the new
   destination and state files, and the pointer block `connect` writes gains
   one line saying what "opt out" means.
+- Usage counts and the Workbench launch: `workbench` counts one per launch
+  (`sannr workbench` or `workbench open`); `workbench status` and `workbench
+  stop` are not counted. The background Workbench process that an open starts
+  is never counted and never shows or records the one-time notice, so on a
+  machine not yet told the notice reaches the `workbench open` command's
+  standard error or the MCP server's tool result.
 - The generated `.sannr/README.md` guide now reads "There's no account, and
   this knowledge is never sent to Sannr" instead of "There's no account and no
   Sannr server", so connected repositories see a one-line change in that
