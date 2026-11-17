@@ -12,11 +12,11 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { chmodSync, cpSync, existsSync, renameSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, cpSync, openSync, existsSync, renameSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { HOME_ENV_NAME, PRODUCT, TELEMETRY_CHECKOUT_ENV_NAME, TELEMETRY_ENV_NAME, TOOL_NAME, USAGE_URL } from '../lib/brand.mjs';
+import { HOME_ENV_NAME, MCP_INSPECT_CLIENT_NAME, PRODUCT, TELEMETRY_CHECKOUT_ENV_NAME, TELEMETRY_ENV_NAME, TOOL_NAME, USAGE_URL } from '../lib/brand.mjs';
 import { cliFeatureNames } from '../lib/telemetry.mjs';
 import { SAVED_REQUEST_TOOL } from '../lib/saved-request-actions.mjs';
 import { WORKBENCH_AGENT_TOOL } from '../lib/workbench-agent-tools.mjs';
@@ -1587,4 +1587,330 @@ test('F6: each source-tree marker alone, and a marker path that cannot be read, 
     assert.equal(JSON.parse((await go(m, ['telemetry', 'status', '--json'])).stdout).reason.source, 'checkout', name);
   }
   clear();
+});
+
+// --- Amendment 8: the notice and mcp inspect -------------------------------------
+// `mcp inspect --execute` keeps an observation of a tool result, not its text,
+// so Sannr's own server must neither attach the notice to it nor record it as
+// given. The server and (except in U4) the inspector are a copied package with
+// no source-tree marker, so they count as an installed copy.
+function installedCopy(t) {
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-inspect-')));
+  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  const copy = join(parent, 'package');
+  for (const entry of ['bin', 'lib', 'skill', 'stacks', 'server.mjs', 'package.json']) cpSync(join(ROOT, entry), join(copy, entry), { recursive: true });
+  return { cli: join(copy, 'bin', 'cli.mjs'), server: join(copy, 'server.mjs') };
+}
+// `stdout` and `stderr` are 'pipe' (read here), 'ignore' (the null device) or a file descriptor.
+function runCli(cli, args, { cwd, env, stdout: out = 'pipe', stderr: err = 'pipe' }) {
+  const child = spawn(process.execPath, [cli, ...args], { cwd, env, stdio: ['ignore', out, err] });
+  let stdout = '', stderr = '';
+  child.stdout?.on('data', chunk => stdout += chunk);
+  child.stderr?.on('data', chunk => stderr += chunk);
+  const timer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', code => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+  });
+}
+// api_saved_requests list reads local files and sends nothing.
+const INSPECT_CALL = ['--execute', 'api_saved_requests', '--args', 'api_saved_requests={"action":"list"}', '--execute-unsafe', '--json'];
+const noticesRecorded = dir => existsSync(join(dir, 'telemetry.json')) ? (readFileSync(join(dir, 'telemetry.json'), 'utf8').match(/"noticed_at":"/g) ?? []).length : 0;
+const counted = (dir, feature) => existsSync(join(dir, 'telemetry', 'counts.jsonl'))
+  ? readFileSync(join(dir, 'telemetry', 'counts.jsonl'), 'utf8').split('\n').filter(line => line === JSON.stringify({ f: feature })).length : 0;
+function measuredOnce(result) {
+  assert.equal(result.code, 0, `${result.stdout}${result.stderr}`);
+  assert.equal(json(result).measured.length, 1, 'the inspector did not make the one tool call');
+  assert.doesNotMatch(result.stdout, NOTICE, 'the notice reached the inspection output');
+}
+function serveCopy(t, m, server) {
+  const child = spawn(process.execPath, [server], { cwd: m.root, env: { ...m.env, API_CONTEXT_DIR: m.root }, stdio: ['pipe', 'pipe', 'pipe'] });
+  const exited = new Promise(resolve => child.once('close', resolve));
+  t.after(async () => { if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exited; } });
+  const waiters = new Map();
+  let buffer = '';
+  child.stdout.on('data', chunk => {
+    buffer += chunk;
+    const parts = buffer.split('\n'); buffer = parts.pop();
+    for (const part of parts) if (part.trim()) { const msg = JSON.parse(part); waiters.get(msg.id)?.(msg); }
+  });
+  const call = (id, message) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { waiters.delete(id); reject(new Error(`MCP reply ${id} did not arrive within 15 s`)); }, 15_000);
+    waiters.set(id, msg => { clearTimeout(timer); waiters.delete(id); resolve(msg); });
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, ...message }) + '\n');
+  });
+  const close = async () => {
+    child.stdin.end();
+    const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
+    await exited; clearTimeout(timer);
+  };
+  return { call, close };
+}
+
+test('A8 U1: a client that names itself as the inspector gets no notice and records none; the next client gets it', async t => {
+  const m = machine(t);
+  delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const { server } = installedCopy(t);
+  const tool = { method: 'tools/call', params: { name: 'api_saved_requests', arguments: { action: 'list' } } };
+  const inspector = serveCopy(t, m, server);
+  await inspector.call(1, { method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: MCP_INSPECT_CLIENT_NAME, version: '0.1.0' } } });
+  const quiet = await inspector.call(2, tool);
+  await inspector.close();
+  assert.equal(quiet.result.content.length, 1, JSON.stringify(quiet.result.content));
+  assert.equal(quiet.result.content.filter(block => NOTICE.test(block.text)).length, 0, 'the inspector got the notice');
+  assert.equal(noticesRecorded(m.state), 0, 'the notice was recorded as given to the inspector');
+  assert.equal(existsSync(join(m.state, 'telemetry', 'counts.jsonl')), false, 'a call on a state directory not told was counted');
+
+  const host = serveCopy(t, m, server);
+  await host.call(1, { method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'some-agent-host' } } });
+  const first = await host.call(2, tool);
+  const second = await host.call(3, tool);
+  await host.close();
+  assert.match(first.result.content.at(-1).text, NOTICE, 'the notice is not the last block of the next client\'s first result');
+  assert.equal(first.result.content.filter(block => NOTICE.test(block.text)).length, 1);
+  assert.equal(second.result.content.filter(block => NOTICE.test(block.text)).length, 0);
+  assert.equal(noticesRecorded(m.state), 1);
+});
+
+test('A8 U2: mcp inspect of a server given another state directory, the parent already told: that directory records nothing', async t => {
+  if (process.platform === 'win32') { t.skip('needs /usr/bin/env'); return; }
+  const m = machine(t);
+  delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const { cli, server } = installedCopy(t);
+  assert.match((await runCli(cli, ['--version'], { cwd: m.root, env: m.env })).stderr, NOTICE, 'the parent was not told');
+  const other = join(m.parent, 'other-state');
+  const result = await runCli(cli, ['mcp', 'inspect', '/usr/bin/env', `${HOME_ENV_NAME}=${other}`, process.execPath, server, ...INSPECT_CALL], { cwd: m.root, env: m.env });
+  measuredOnce(result);
+  assert.doesNotMatch(result.stderr, NOTICE);
+  assert.equal(existsSync(join(other, 'telemetry.json')), false, 'the server\'s state directory holds a telemetry record');
+  assert.equal(noticesRecorded(m.state), 1);
+});
+
+test('A8 U3: mcp inspect with the environment stripped (env -i): the server\'s state directory records nothing', async t => {
+  if (process.platform === 'win32') { t.skip('needs /usr/bin/env'); return; }
+  const m = machine(t);
+  delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const { cli, server } = installedCopy(t);
+  await runCli(cli, ['--version'], { cwd: m.root, env: m.env });
+  const other = join(m.parent, 'other-state'), otherHome = join(m.parent, 'other-home');
+  mkdirSync(otherHome);
+  // The fetch-blocking preload goes through env -i too, so the server cannot reach a real host.
+  const result = await runCli(cli, ['mcp', 'inspect', '/usr/bin/env', '-i', `PATH=${process.env.PATH}`, `HOME=${otherHome}`, `${HOME_ENV_NAME}=${other}`,
+    `NODE_OPTIONS=${m.env.NODE_OPTIONS}`, process.execPath, server, ...INSPECT_CALL], { cwd: m.root, env: m.env });
+  measuredOnce(result);
+  assert.equal(existsSync(join(other, 'telemetry.json')), false, 'the server\'s state directory holds a telemetry record');
+  assert.deepEqual(readdirSync(otherHome), [], 'the stripped server wrote in its home');
+});
+
+test('A8 U4: a source tree inspecting an installed copy on a home never told: no record and nothing printed', async t => {
+  const m = machine(t);
+  delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const { server } = installedCopy(t);
+  // This checkout's own CLI without the checkout switch is a source tree: it never counts.
+  const result = await runCli(CLI, ['mcp', 'inspect', process.execPath, server, ...INSPECT_CALL], { cwd: m.root, env: m.env });
+  measuredOnce(result);
+  assert.doesNotMatch(result.stderr, NOTICE, 'a notice was printed');
+  assert.equal(existsSync(join(m.state, 'telemetry.json')), false, 'the installed copy\'s state directory was recorded as told');
+  assert.equal(existsSync(join(m.state, 'telemetry', 'counts.jsonl')), false);
+});
+
+test('A8 U5 (guard): mcp inspect on a home never told shows the notice once on stderr, records it once, counts mcp_inspect', async t => {
+  const m = machine(t);
+  delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const { cli, server } = installedCopy(t);
+  const result = await runCli(cli, ['mcp', 'inspect', process.execPath, server, ...INSPECT_CALL], { cwd: m.root, env: m.env });
+  measuredOnce(result);
+  assert.equal((result.stderr.match(new RegExp(NOTICE.source, 'g')) ?? []).length, 1, result.stderr);
+  assert.equal(noticesRecorded(m.state), 1);
+  assert.equal(counted(m.state, 'mcp_inspect'), 1);
+});
+
+test('A8 U6 (guard): told and on, a tool call made through the inspector counts mcp_<tool> once', async t => {
+  const m = machine(t);
+  delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const { cli, server } = installedCopy(t);
+  await runCli(cli, ['--version'], { cwd: m.root, env: m.env });
+  const result = await runCli(cli, ['mcp', 'inspect', process.execPath, server, ...INSPECT_CALL], { cwd: m.root, env: m.env });
+  measuredOnce(result);
+  assert.doesNotMatch(result.stderr, NOTICE);
+  assert.equal(counted(m.state, 'mcp_api_saved_requests'), 1);
+  assert.equal(noticesRecorded(m.state), 1);
+});
+
+// --- Amendment 9: the null device, a proxy, the fixed name, a second initialize ----
+// A copy with one source-tree marker: it never counts, so whatever is recorded
+// or printed comes from the installed copy it starts.
+function sourceTreeCopy(t) {
+  const { cli } = installedCopy(t);
+  const root = join(cli, '..', '..');
+  mkdirSync(join(root, 'scripts'));
+  writeFileSync(join(root, 'scripts', 'test-unit.mjs'), '');
+  return cli;
+}
+const telemetryRecords = dir => readdirSync(dir, { recursive: true }).filter(name => String(name).endsWith('telemetry.json'));
+
+test('A9 V1: a source tree inspecting an installed CLI (--version, and mcp with serve forgotten) on a home never told: no record', async t => {
+  // Each target is its own subtest, so the second runs when the first fails (A10.4).
+  for (const target of [['--version'], ['mcp']]) await t.test(target.join(' '), async t => {
+    const m = machine(t);
+    delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+    const inspector = sourceTreeCopy(t), { cli } = installedCopy(t);
+    const result = await runCli(inspector, ['mcp', 'inspect', process.execPath, cli, ...target, '--json'], { cwd: m.root, env: m.env });
+    assert.doesNotMatch(result.stdout + result.stderr, NOTICE, target.join(' '));
+    assert.equal(existsSync(join(m.state, 'telemetry.json')), false, `${target.join(' ')}: the notice was recorded with its stderr discarded`);
+    assert.equal(existsSync(join(m.state, 'telemetry', 'counts.jsonl')), false, `${target.join(' ')}: counted`);
+  });
+});
+
+test('A9 V2: stderr (and stdout for connect) on the null device records nothing; the next readable run is told', async t => {
+  // Two subtests, so the connect case runs when the first fails (A10.4).
+  await t.test('stderr', async t => {
+  const m = machine(t);
+  delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const { cli } = installedCopy(t);
+  const quiet = await runCli(cli, ['--version'], { cwd: m.root, env: m.env, stderr: 'ignore' });
+  assert.equal(quiet.code, 0);
+  assert.equal(existsSync(join(m.state, 'telemetry.json')), false, 'the notice was recorded on the null device');
+  assert.equal(existsSync(join(m.state, 'telemetry', 'counts.jsonl')), false, 'a run on the null device was counted');
+  const told = await runCli(cli, ['--version'], { cwd: m.root, env: m.env });
+  assert.equal((told.stderr.match(new RegExp(NOTICE.source, 'g')) ?? []).length, 1, told.stderr);
+  assert.equal(noticesRecorded(m.state), 1);
+  });
+
+  await t.test('connect stdout', async t => {
+  const { cli } = installedCopy(t);
+  const c = machine(t);
+  delete c.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const connect = ['connect', '--base-url', 'http://127.0.0.1:9'];
+  const silent = await runCli(cli, connect, { cwd: c.root, env: c.env, stdout: 'ignore' });
+  assert.equal(silent.code, 0, silent.stderr);
+  assert.doesNotMatch(silent.stderr, NOTICE);
+  assert.equal(existsSync(join(c.state, 'telemetry.json')), false, 'connect recorded the notice with stdout on the null device');
+  const shown = await runCli(cli, ['connect'], { cwd: c.root, env: c.env });
+  assert.equal((shown.stdout.match(new RegExp(NOTICE.source, 'g')) ?? []).length, 1, `${shown.stdout}${shown.stderr}`);
+  assert.equal(noticesRecorded(c.state), 1);
+  });
+});
+
+test('A9 V3 (guard): stderr as a pipe and as a file: the notice is written and recorded', async t => {
+  const { cli } = installedCopy(t);
+  const piped = machine(t);
+  delete piped.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  assert.match((await runCli(cli, ['--version'], { cwd: piped.root, env: piped.env })).stderr, NOTICE);
+  assert.equal(noticesRecorded(piped.state), 1);
+  const filed = machine(t);
+  delete filed.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const file = join(filed.parent, 'stderr.txt'), fd = openSync(file, 'w');
+  try { await runCli(cli, ['--version'], { cwd: filed.root, env: filed.env, stderr: fd }); } finally { closeSync(fd); }
+  assert.equal((readFileSync(file, 'utf8').match(new RegExp(NOTICE.source, 'g')) ?? []).length, 1);
+  assert.equal(noticesRecorded(filed.state), 1);
+});
+
+test('A9 V4: through a proxy that renames the client, the inspector shows the notice once on its stderr; a second inspection nothing', async t => {
+  const m = machine(t);
+  delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const inspector = sourceTreeCopy(t), { server } = installedCopy(t);
+  // Like an aggregating gateway: it initializes the server under its own name.
+  const proxy = join(m.parent, 'proxy.mjs');
+  writeFileSync(proxy, `import { spawn } from 'node:child_process';
+const child = spawn(process.execPath, process.argv.slice(2), { stdio: ['pipe', 'inherit', 'inherit'] });
+let buffer = '';
+process.stdin.on('data', chunk => { buffer += chunk; const lines = buffer.split('\\n'); buffer = lines.pop();
+  for (const line of lines) { if (!line.trim()) continue; const msg = JSON.parse(line);
+    if (msg.method === 'initialize') msg.params.clientInfo = { name: 'some-gateway', version: '1' };
+    child.stdin.write(JSON.stringify(msg) + '\\n'); } });
+process.stdin.on('end', () => child.stdin.end());
+child.on('close', code => process.exit(code ?? 0));
+`);
+  const first = await runCli(inspector, ['mcp', 'inspect', process.execPath, proxy, server, ...INSPECT_CALL], { cwd: m.root, env: m.env });
+  measuredOnce(first);
+  assert.equal((first.stderr.match(new RegExp(NOTICE.source, 'g')) ?? []).length, 1, first.stderr);
+  assert.equal(noticesRecorded(m.state), 1);
+  const second = await runCli(inspector, ['mcp', 'inspect', process.execPath, proxy, server, ...INSPECT_CALL], { cwd: m.root, env: m.env });
+  measuredOnce(second);
+  assert.doesNotMatch(second.stderr, NOTICE);
+});
+
+test('A9 V5: another product name in the server\'s environment only: the inspector\'s call gets no notice and leaves no record', async t => {
+  if (process.platform === 'win32') { t.skip('needs /usr/bin/env'); return; }
+  const m = machine(t);
+  delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const inspector = sourceTreeCopy(t), { server } = installedCopy(t);
+  const result = await runCli(inspector, ['mcp', 'inspect', '/usr/bin/env', 'API_CONTEXT_PRODUCT_NAME=zqother', process.execPath, server, ...INSPECT_CALL],
+    { cwd: m.root, env: m.env });
+  measuredOnce(result);
+  assert.doesNotMatch(result.stderr, NOTICE);
+  assert.deepEqual(telemetryRecords(m.parent), [], 'a telemetry record was written');
+});
+
+test('A9 V6: two initialize messages in one session: the last one decides', async t => {
+  const tool = { method: 'tools/call', params: { name: 'api_saved_requests', arguments: { action: 'list' } } };
+  const init = name => ({ method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name } } });
+  const { server } = installedCopy(t);
+  const a = machine(t);
+  delete a.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const host = serveCopy(t, a, server);
+  await host.call(1, init(MCP_INSPECT_CLIENT_NAME));
+  await host.call(2, init('some-agent-host'));
+  const told = await host.call(3, tool);
+  await host.close();
+  assert.match(told.result.content.at(-1).text, NOTICE, 'the other client, initialized last, got no notice');
+  assert.equal(noticesRecorded(a.state), 1);
+  const b = machine(t);
+  delete b.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const inspected = serveCopy(t, b, server);
+  await inspected.call(1, init('some-agent-host'));
+  await inspected.call(2, init(MCP_INSPECT_CLIENT_NAME));
+  const quiet = await inspected.call(3, tool);
+  await inspected.close();
+  assert.equal(quiet.result.content.filter(block => NOTICE.test(block.text)).length, 0, 'the inspector, initialized last, got the notice');
+  assert.equal(noticesRecorded(b.state), 0);
+});
+
+// --- Amendment 10: what the inspector drops, its own text once, another device ----
+test('A10 W1: connect (plain and --json) as the inspect target: the notice is on the inspector\'s stderr once, none on stdout', async t => {
+  for (const json of [false, true]) await t.test(json ? '--json' : 'plain', async t => {
+    const m = machine(t);
+    delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+    const inspector = sourceTreeCopy(t), { cli } = installedCopy(t);
+    const target = [process.execPath, cli, 'connect', '--base-url', 'http://127.0.0.1:9', ...(json ? ['--json'] : [])];
+    const result = await runCli(inspector, ['mcp', 'inspect', ...target], { cwd: m.root, env: m.env });
+    assert.equal((result.stderr.match(new RegExp(NOTICE.source, 'g')) ?? []).length, 1, result.stderr);
+    assert.doesNotMatch(result.stdout, NOTICE);
+    assert.equal(noticesRecorded(m.state), 1, 'connect did not run as the target');
+  });
+});
+
+test('A10 W2: two tool results carrying notice-like blocks: the inspector prints its own notice once and none of the server\'s bytes', async t => {
+  const m = machine(t);
+  delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const inspector = sourceTreeCopy(t);
+  const fake = join(m.parent, 'fake-server.mjs');
+  writeFileSync(fake, `const notice = 'Sannr telemetry: once a day Sannr sends usage counts to zqserver.invalid: ZQ SERVER BYTES';
+let buffer = '';
+const send = msg => process.stdout.write(JSON.stringify(msg) + '\\n');
+process.stdin.on('data', chunk => { buffer += chunk; const lines = buffer.split('\\n'); buffer = lines.pop();
+  for (const line of lines) { if (!line.trim()) continue; const msg = JSON.parse(line);
+    if (msg.method === 'initialize') send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: 'zqfake', version: '1' } } });
+    else if (msg.method === 'tools/list') send({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'one', inputSchema: { type: 'object' } }, { name: 'two', inputSchema: { type: 'object' } }] } });
+    else if (msg.method === 'tools/call') send({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'ok' }, { type: 'text', text: notice }] } });
+    else if (msg.id !== undefined) send({ jsonrpc: '2.0', id: msg.id, result: {} }); } });
+process.stdin.on('end', () => process.exit(0));
+`);
+  const result = await runCli(inspector, ['mcp', 'inspect', process.execPath, fake, '--execute', 'one', '--execute', 'two', '--execute-unsafe', '--json'], { cwd: m.root, env: m.env });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(json(result).measured.length, 2);
+  assert.equal((result.stderr.match(new RegExp(NOTICE.source, 'g')) ?? []).length, 1, result.stderr);
+  for (const bytes of ['ZQ SERVER BYTES', 'zqserver.invalid'])
+    assert.equal((result.stdout + result.stderr).includes(bytes), false, `the server's bytes (${bytes}) were printed`);
+});
+
+test('A10 W3: stderr on another character device (/dev/zero), home never told: the notice is recorded', async t => {
+  if (process.platform === 'win32') { t.skip('needs /dev/zero'); return; }
+  const m = machine(t);
+  delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const { cli } = installedCopy(t);
+  const fd = openSync('/dev/zero', 'w');
+  try { assert.equal((await runCli(cli, ['--version'], { cwd: m.root, env: m.env, stderr: fd })).code, 0); } finally { closeSync(fd); }
+  assert.equal(noticesRecorded(m.state), 1, 'a character device that is not the null device was treated as one');
 });

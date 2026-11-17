@@ -71,10 +71,20 @@ as any of its rows.
   prints a notice: `connect` shows it in its output (and as
   `telemetry_notice` in `connect --json`); any other command prints it once
   as one line on standard error; the MCP server adds it as a separate, last
-  text block to its first tool result, for your agent to relay. Standard
-  output and JSON output are otherwise unchanged. Until the notice has been
-  printed, nothing is counted and no identifier exists. Sannr cannot know
-  whether anyone read it.
+  text block to its first tool result, for your agent to relay. On macOS
+  and Linux, a command whose standard error (for `connect`, standard output)
+  is the null device (`2>/dev/null`, or a process started with its output
+  discarded) neither prints nor records the notice; the next command whose
+  output can be read does. On Windows a stream sent to `NUL` is not
+  detected, so the notice is recorded there as before. The MCP server
+  attaches no notice to a tool call made by `sannr mcp inspect --execute`,
+  which keeps no result text, and records none; if a notice reaches the
+  inspector anyway (in a tool result, through a proxy or gateway that
+  renamed it, or in the output of a Sannr command such as `connect` given
+  as its target), `mcp inspect` prints the notice once on its own standard
+  error. Standard output and JSON output are otherwise unchanged. Until the
+  notice has been printed, nothing is counted and no identifier exists.
+  Sannr cannot know whether anyone read it.
 - **Not from the background Workbench.** `workbench open` and the
   `api_workbench` tool's `open` start the repository's Workbench as a
   background process whose output nobody reads. That process never shows or
@@ -93,8 +103,8 @@ as any of its rows.
   its page, whatever the environment of a later `workbench open` or
   `api_workbench` call that reuses it; stop it (`sannr workbench stop`) to
   start it again under a new environment. `sannr telemetry off`, run with the
-  same home directory, covers a running Workbench at once: the Workbench checks the off
-  marker before every count.
+  same home directory, covers a running Workbench at once: the Workbench
+  checks the off marker before every count.
   `workbench serve --help` (or `-h`) is help, counted as `help` like any
   other command's.
 - **A day later.** The first document is sent no earlier than 24 hours after
