@@ -1263,8 +1263,11 @@ test('A9: counts clamp at 10,000, and features beyond 64 or 2,048 bytes wait for
 });
 
 // --- A16 -------------------------------------------------------------------------
+// A pinned file is hashed with the line endings the repository stores: a
+// Windows checkout may write CRLF, and the published package is built from LF.
+const pinnedBytes = path => Buffer.from(readFileSync(join(ROOT, path), 'utf8').replace(/\r\n/g, '\n'));
 test('A16: lib/usage-features.json is the one sorted list of names, pinned, shipped and equal to what is counted', () => {
-  const bytes = readFileSync(join(ROOT, 'lib/usage-features.json'));
+  const bytes = pinnedBytes('lib/usage-features.json');
   assert.equal(createHash('sha256').update(bytes).digest('hex'), 'de500569c131717a620ad08e9c974a347bf2e7ad34b28df1845b08ce5eb08771');
   const names = JSON.parse(bytes);
   assert.ok(Array.isArray(names) && names.every(name => typeof name === 'string' && /^[a-z][a-z0-9_]{0,31}$/.test(name)));
@@ -1279,7 +1282,7 @@ test('A16: lib/usage-features.json is the one sorted list of names, pinned, ship
 
 // --- USE-1-13 -------------------------------------------------------------------
 test('USE-1-13: the contract is pinned, the destination is documented, the notice says what it must, the words are exact', async t => {
-  assert.equal(createHash('sha256').update(readFileSync(join(ROOT, 'lib/usage.schema.json'))).digest('hex'),
+  assert.equal(createHash('sha256').update(pinnedBytes('lib/usage.schema.json')).digest('hex'),
     'b326dd62c8bf63c5ac787a178e8c562e80c91d7dbe6214bd24181e12853fe3a5');
   assert.ok(readFileSync(join(ROOT, 'docs/network-behavior.md'), 'utf8').includes(USAGE_URL));
   const m = machine(t);
@@ -1330,8 +1333,10 @@ function telemetryFiles(root) {
 // start a test child with no HOME at all.
 function runUnset(m, unset, args, env = {}) {
   const started = performance.now();
-  const child = spawn('/usr/bin/env', [...unset.flatMap(name => ['-u', name]), process.execPath, CLI, ...args],
-    { cwd: m.root, env: { ...m.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  // With nothing to remove the CLI starts directly; Windows has no env command
+  // and its variants (empty and relative) remove nothing.
+  const [command, argv] = unset.length ? ['/usr/bin/env', [...unset.flatMap(name => ['-u', name]), process.execPath, CLI, ...args]] : [process.execPath, [CLI, ...args]];
+  const child = spawn(command, argv, { cwd: m.root, env: { ...m.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '', stderr = '';
   child.stdout.on('data', chunk => stdout += chunk);
   child.stderr.on('data', chunk => stderr += chunk);
