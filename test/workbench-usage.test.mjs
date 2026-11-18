@@ -94,7 +94,7 @@ globalThis.fetch = async (url, init = {}) => {
     // Stop the service a test started, whatever state the test ended in.
     await cli(['workbench', 'stop', '--project', root]).catch(() => {});
     await new Promise(done => api.close(done));
-    rmSync(base, { recursive: true, force: true });
+    rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   const lines = () => { try { return readFileSync(join(state, 'telemetry', 'counts.jsonl'), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)); } catch { return []; } };
   return {

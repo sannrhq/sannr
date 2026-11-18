@@ -64,7 +64,7 @@ function validate(schema, value, path = '$') {
 function machine(t, { project = 'project', stateInHome = false } = {}) {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-')));
   t.after(() => { for (const dir of ['state', 'other-state', 'home']) try { chmodSync(join(parent, dir), 0o700); } catch { /* absent */ }
-    rmSync(parent, { recursive: true, force: true }); });
+    rmSync(parent, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const home = join(parent, 'home'), state = stateInHome ? join(parent, 'home', `.${PRODUCT}`) : join(parent, 'state'), root = join(parent, project);
   mkdirSync(home); mkdirSync(root);
   const calls = join(parent, 'calls.jsonl'), mode = join(parent, 'mode.txt'), clock = join(parent, 'clock.txt'), preload = join(parent, 'preload.mjs');
@@ -414,7 +414,7 @@ test('A17: a source checkout never counts or sends unless a test names the check
 
 test('A17c: a source tree without .git never counts; a packed copy behaves as an installed package', async t => {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-trees-')));
-  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  t.after(() => rmSync(parent, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   // A source copy as a ZIP download or an archive gives it: no .git.
   const source = join(parent, 'source');
   for (const entry of ['bin', 'lib', 'skill', 'stacks', 'server.mjs', 'package.json', 'scripts', 'test'])
@@ -892,7 +892,7 @@ test('A17a: a test run never counts or sends, and a packed copy run as the packa
   // test/package.test.mjs runs its packed copy: the test process's own
   // environment, which carries the test runner's mark, and only HOME moved.
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-packed-')));
-  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  t.after(() => rmSync(parent, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const copy = join(parent, 'package'), home = join(parent, 'home');
   mkdirSync(home);
   for (const entry of ['bin', 'lib', 'skill', 'stacks', 'server.mjs', 'package.json', 'docs'])
@@ -1165,7 +1165,7 @@ test('F6: on and reset name an unwritable directory, not a send in progress', as
 
 test('A17b: the packed copy run with plain node and an exported SANNR_HOME leaves no telemetry state and sends nothing', async t => {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-canary-')));
-  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  t.after(() => rmSync(parent, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const canary = join(parent, 'home'), state = join(canary, 'state-home'), calls = join(parent, 'calls.jsonl'), preload = join(parent, 'preload.mjs');
   mkdirSync(state, { recursive: true });
   writeFileSync(preload, `import { appendFileSync } from 'node:fs';
@@ -1565,7 +1565,7 @@ test('F8: off racing on across three directories ends as one of them says, and n
 
 test('F6: each source-tree marker alone, and a marker path that cannot be read, make a source tree', async t => {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-markers-')));
-  t.after(() => { try { chmodSync(join(parent, 'tree', 'scripts'), 0o700); } catch { /* absent */ } rmSync(parent, { recursive: true, force: true }); });
+  t.after(() => { try { chmodSync(join(parent, 'tree', 'scripts'), 0o700); } catch { /* absent */ } rmSync(parent, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const tree = join(parent, 'tree');
   for (const entry of ['bin', 'lib', 'skill', 'stacks', 'server.mjs', 'package.json']) cpSync(join(ROOT, entry), join(tree, entry), { recursive: true });
   // Written out, not imported, so a marker dropped from the code fails.
@@ -1607,7 +1607,7 @@ test('F6: each source-tree marker alone, and a marker path that cannot be read, 
 // no source-tree marker, so they count as an installed copy.
 function installedCopy(t) {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-inspect-')));
-  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  t.after(() => rmSync(parent, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const copy = join(parent, 'package');
   for (const entry of ['bin', 'lib', 'skill', 'stacks', 'server.mjs', 'package.json']) cpSync(join(ROOT, entry), join(copy, entry), { recursive: true });
   return { cli: join(copy, 'bin', 'cli.mjs'), server: join(copy, 'server.mjs') };
