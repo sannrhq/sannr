@@ -59,7 +59,7 @@ jobs:
             # than the full suite's 180 seconds a file on a hosted Windows runner.
             node --test --test-timeout=900000 --test-reporter=tap test/telemetry.test.mjs test/workbench-usage.test.mjs 2>&1 | Tee-Object -FilePath windows.log
           } else {
-            node --test --test-timeout=60000 --test-reporter=tap test/native-platform.test.mjs test/alpha4-durable-mcp.test.mjs test/workbench-control.test.mjs test/workbench-agent.test.mjs test/workbench-engine.test.mjs test/workbench-server.test.mjs test/workbench-session.test.mjs 2>&1 | Tee-Object -FilePath windows.log
+            node --test --test-timeout=60000 --test-reporter=tap test/native-platform.test.mjs test/alpha4-durable-mcp.test.mjs test/workbench-control.test.mjs test/workbench-agent.test.mjs test/workbench-engine.test.mjs test/workbench-server.test.mjs test/workbench-session.test.mjs test/stack-import.test.mjs 2>&1 | Tee-Object -FilePath windows.log
           }
           $testExit = $LASTEXITCODE
           "### Windows $env:WINDOWS_TEST_LANE — Node ${{ matrix.node }}" >> $env:GITHUB_STEP_SUMMARY
