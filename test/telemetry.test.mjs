@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { chmodSync, closeSync, cpSync, openSync, existsSync, renameSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir, userInfo } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { HOME_ENV_NAME, MCP_INSPECT_CLIENT_NAME, PRODUCT, TELEMETRY_CHECKOUT_ENV_NAME, TELEMETRY_ENV_NAME, TOOL_NAME, USAGE_URL } from '../lib/brand.mjs';
 import { cliFeatureNames } from '../lib/telemetry.mjs';
@@ -423,11 +423,17 @@ test('A17c: a source tree without .git never counts; a packed copy behaves as an
   // The packed copy npm makes from this tree.
   const packDir = join(parent, 'pack'), packed = join(parent, 'packed');
   mkdirSync(packDir); mkdirSync(packed);
-  const pack = spawn('npm', ['pack', '--ignore-scripts', '--silent', '--pack-destination', packDir], { cwd: ROOT, stdio: 'ignore' });
-  assert.equal(await new Promise(resolve => pack.once('close', resolve)), 0, 'npm pack failed');
-  const tarball = join(packDir, readdirSync(packDir).find(name => name.endsWith('.tgz')));
-  const untar = spawn('tar', ['-xzf', tarball, '-C', packed], { stdio: 'ignore' });
-  assert.equal(await new Promise(resolve => untar.once('close', resolve)), 0);
+  // On Windows `npm` is a command script that cannot be started directly, so
+  // npm's own entry runs under this Node: the one npm set, or the copy beside
+  // node.exe. tar is given relative names: a drive letter reads as a remote
+  // host to GNU tar, which is first on some Windows paths.
+  const npmCli = process.env.npm_execpath || (process.platform === 'win32' ? join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js') : null);
+  const packArgs = ['pack', '--ignore-scripts', '--silent', '--pack-destination', packDir];
+  const pack = npmCli ? spawn(process.execPath, [npmCli, ...packArgs], { cwd: ROOT, stdio: 'ignore' }) : spawn('npm', packArgs, { cwd: ROOT, stdio: 'ignore' });
+  assert.equal(await new Promise(resolve => pack.once('error', () => resolve('not started')).once('close', resolve)), 0, 'npm pack failed');
+  const tarball = readdirSync(packDir).find(name => name.endsWith('.tgz'));
+  const untar = spawn('tar', ['-xzf', tarball, '-C', join('..', 'packed')], { cwd: packDir, stdio: 'ignore' });
+  assert.equal(await new Promise(resolve => untar.once('error', () => resolve('not started')).once('close', resolve)), 0, 'tar failed');
   const packedRoot = join(packed, 'package');
   assert.equal(existsSync(join(packedRoot, 'test')) || existsSync(join(packedRoot, 'scripts', 'test-unit.mjs')) || existsSync(join(packedRoot, '.git')), false,
     'the packed copy contains a source-tree marker');
@@ -684,7 +690,7 @@ test('F11: a broken or abandoned send lock does not stop sending; a live one hol
     else {
       mkdirSync(m.lock);
       const created = kind === 'old' ? START + 25 * 3_600_000 - 10 * 60_000 : START + 30 * 86_400_000;
-      if (kind !== 'empty') writeFileSync(join(m.lock, 'owner.json'), JSON.stringify({ nonce: 'abandoned', created_at: created, pid: 1 }));
+      if (kind !== 'empty') writeFileSync(join(m.lock, 'owner.json'), JSON.stringify({ nonce: 'abandoned', created_at: created, pid: process.pid }));
     }
     assert.match(json(await m.run(['telemetry', 'status', '--json'])).send_lock, /stale/, kind);
     await m.run(['--version']);

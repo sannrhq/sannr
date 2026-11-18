@@ -10,6 +10,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
 
 ## [Unreleased]
 
+- `stack import` from a local path records a nearby source by its relative
+  path when the repository and the source are reached through different
+  spellings of one directory: a link or, on Windows, a short (8.3) name.
+  Before, such a source was recorded by its directory name only and a second
+  import from it refused with `STACK_EXISTS` instead of updating.
 - Usage counts. Unless turned off, Sannr sends one document a day to
   `https://sannr.dev/api/v1/usage`: a random install identifier that links one
   day's document to the next, the version, operating system and processor

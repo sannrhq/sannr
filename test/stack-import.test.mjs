@@ -97,6 +97,17 @@ test('IMP-01: a source holding one stack installs its contract and notes, and sh
   assert.equal(listed.imported.commit, source.commit);
 });
 
+// git names a repository by its long path; the path a person stands in may
+// reach the same directory through a link or a Windows short name. Recorded
+// by directory name only, the source could not be updated from again.
+test('a sibling source is recorded by its relative path when the repository is named through a linked parent', { skip: process.platform === 'win32' && 'needs a directory link; the Windows short-name case is IMP-01 and IMP-08 on a hosted runner' }, async t => {
+  const box = sandbox(t), source = await petsSource(box), target = box.repo('target');
+  const linked = join(box.base, 'linked'); mkdirSync(linked); symlinkSync(target, join(linked, 'target'), 'dir');
+  const opened = await openImportSource(join(linked, 'target'), parseImportSource(source.root));
+  assert.equal(opened.location, '../source'); assert.equal(opened.exact, true);
+  opened.release();
+});
+
 test('IMP-02: a source with several stacks lists them and writes nothing until some or all are chosen', async t => {
   const box = sandbox(t), source = box.repo('source');
   for (const name of ['alpha', 'beta', 'gamma']) rawStack(source, name);
