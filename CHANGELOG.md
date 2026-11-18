@@ -10,6 +10,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
 
 ## [Unreleased]
 
+## [0.1.0-beta.2] - 2026-11-24
+
 - Usage counts. Unless turned off, Sannr sends one document a day to
   `https://sannr.dev/api/v1/usage`: a random install identifier that links one
   day's document to the next, the version, operating system and processor
@@ -26,12 +28,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   before. A notice whose write to standard error fails is not recorded.
   Nothing is counted, sent or shown in a process started with
   `API_CONTEXT_PRODUCT_NAME` set (a test seam), and the sender's user agent
-  is a fixed name, not one read from the environment. The MCP server attaches none to a tool call made by `mcp inspect`,
-  and records none; one that reaches `mcp inspect` anyway (through a proxy
-  that renamed it, or in the output of a Sannr command given as its target)
-  is printed on its standard error. `sannr telemetry
-  off` (or telling the agent "opt out") writes an off marker that holds for
-  every Sannr process run with the same home directory until `telemetry on`,
+  is a fixed name, not one read from the environment. The MCP server attaches
+  none to a tool call made by `mcp inspect`, and records none; one that
+  reaches `mcp inspect` anyway (through a proxy that renamed it, or in the
+  output of a Sannr command given as its target) is printed on its standard
+  error. `sannr telemetry off` (or telling the agent "opt out") writes an off
+  marker that holds for every Sannr process run with the same home directory until `telemetry on`,
   marks at once every other state directory on that home's list (the CLI and
   the MCP server record the directory they use; at most 256, only directories
   that exist), never waits
@@ -130,8 +132,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   receipt lists each environment's hosts, credential variable names and
   production flag; every named contract must be one `stack add --contract`
   accepts, with an allowed file name. See `docs/stacks.md`.
-
-## [0.1.0-beta.2] - 2026-11-06
 
 - Native Windows is supported from this version: Windows paths and `node.exe`
   are used directly for MCP registration, a package-manager MCP launch runs
