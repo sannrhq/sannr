@@ -1914,3 +1914,94 @@ test('A10 W3: stderr on another character device (/dev/zero), home never told: t
   try { assert.equal((await runCli(cli, ['--version'], { cwd: m.root, env: m.env, stderr: fd })).code, 0); } finally { closeSync(fd); }
   assert.equal(noticesRecorded(m.state), 1, 'a character device that is not the null device was treated as one');
 });
+
+// --- review of 835d5d5: the failed write and the product-name seam ---------------
+const sendLocks = parent => readdirSync(parent, { recursive: true }).filter(name => String(name).endsWith('.send.lock'));
+async function sendersDone(parent, limit = 15_000) {
+  const end = Date.now() + limit;
+  while (sendLocks(parent).length) { if (Date.now() > end) throw new Error('sender did not finish'); await new Promise(r => setTimeout(r, 50)); }
+}
+
+test('R1: a notice whose write to standard error fails is not recorded; the next readable command is told, and nothing is sent meanwhile', async t => {
+  if (process.platform === 'win32') { t.skip('needs sh and a pipe whose reader has gone'); return; }
+  const m = machine(t);
+  delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const { cli } = installedCopy(t);
+  // The reader (`:`) ends at once; the command starts after it has gone, so
+  // its write to standard error fails with a broken pipe.
+  const deadPipe = () => new Promise((resolve, reject) => {
+    const child = spawn('/bin/sh', ['-c', '{ sleep 0.4; exec "$0" "$1" --version; } 2>&1 >/dev/null | :', process.execPath, cli], { cwd: m.root, env: m.env, stdio: 'ignore' });
+    child.once('error', reject);
+    child.once('close', resolve);
+  });
+  await deadPipe();
+  assert.equal(existsSync(join(m.state, 'telemetry.json')), false, 'a notice nobody received was recorded');
+  assert.equal(existsSync(join(m.state, 'telemetry', 'counts.jsonl')), false, 'the command whose notice failed was counted');
+  m.advance(25);
+  await deadPipe();
+  await sendersDone(m.parent);
+  assert.deepEqual(m.calls(), [], 'a machine that never received the notice sent a document');
+  const told = await runCli(cli, ['--version'], { cwd: m.root, env: m.env });
+  assert.equal((told.stderr.match(new RegExp(NOTICE.source, 'g')) ?? []).length, 1, told.stderr);
+  assert.equal(noticesRecorded(m.state), 1);
+  const again = await runCli(cli, ['--version'], { cwd: m.root, env: m.env });
+  assert.doesNotMatch(again.stderr, NOTICE);
+});
+
+test('R1: a failed write removes only the record it made: a machine already told keeps its record', async t => {
+  if (process.platform === 'win32') { t.skip('needs sh and a pipe whose reader has gone'); return; }
+  const m = machine(t);
+  delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const { cli } = installedCopy(t);
+  await runCli(cli, ['--version'], { cwd: m.root, env: m.env });
+  const before = readFileSync(join(m.state, 'telemetry.json'), 'utf8');
+  await new Promise((resolve, reject) => {
+    const child = spawn('/bin/sh', ['-c', '{ sleep 0.4; exec "$0" "$1" --version; } 2>&1 >/dev/null | :', process.execPath, cli], { cwd: m.root, env: m.env, stdio: 'ignore' });
+    child.once('error', reject);
+    child.once('close', resolve);
+  });
+  assert.equal(readFileSync(join(m.state, 'telemetry.json'), 'utf8'), before);
+});
+
+test('R2: the product-name seam turns usage counts off: no notice, state, count or send, on a fresh home and on one turned off', async t => {
+  const SEAM = 'API_CONTEXT_PRODUCT_NAME', renamed = 'zqseam';
+  const { cli } = installedCopy(t);
+  // A home never told.
+  const fresh = machine(t, { stateInHome: true });
+  delete fresh.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  const first = await runCli(cli, ['--version'], { cwd: fresh.root, env: { ...fresh.env, [SEAM]: renamed } });
+  assert.equal(first.code, 0, first.stderr);
+  assert.doesNotMatch(first.stderr, NOTICE, 'a renamed process showed the notice');
+  assert.deepEqual(telemetryRecords(fresh.parent), [], 'a renamed process wrote a telemetry record');
+  const status = JSON.parse((await runCli(cli, ['telemetry', 'status', '--json'], { cwd: fresh.root, env: { ...fresh.env, [SEAM]: renamed } })).stdout);
+  assert.equal(status.state, 'off');
+  assert.equal(status.reason.variable, SEAM);
+  // A home told, then turned off for good.
+  const m = machine(t, { stateInHome: true });
+  delete m.env[TELEMETRY_CHECKOUT_ENV_NAME];
+  assert.match((await runCli(cli, ['--version'], { cwd: m.root, env: m.env })).stderr, NOTICE);
+  assert.equal((await runCli(cli, ['telemetry', 'off'], { cwd: m.root, env: m.env })).code, 0);
+  const records = telemetryRecords(m.parent);
+  for (const extra of [{}, { [TELEMETRY_ENV_NAME]: '0' }]) {
+    const env = { ...m.env, ...extra, [SEAM]: renamed };
+    const run = await runCli(cli, ['--version'], { cwd: m.root, env });
+    assert.doesNotMatch(run.stderr, NOTICE, 'the seam showed a fresh notice on a home that is off');
+    m.advance(25);
+    await runCli(cli, ['stacks', '--json'], { cwd: m.root, env });
+    await runCli(cli, ['--version'], { cwd: m.root, env });
+    await sendersDone(m.parent);
+  }
+  assert.deepEqual(m.calls(), [], 'a document was sent under the seam');
+  assert.deepEqual(telemetryRecords(m.parent), records, 'the seam made another state directory with a telemetry record');
+  assert.equal(existsSync(join(m.home, `.${renamed}`, 'telemetry')), false);
+});
+
+test('R2: the sender\'s user agent name is fixed, whatever the seam says', async () => {
+  const brand = pathToFileURL(join(ROOT, 'lib/brand.mjs')).href;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', `const b = await import(${JSON.stringify(brand)}); console.log(JSON.stringify([b.PRODUCT, b.USAGE_USER_AGENT_NAME]))`],
+    { env: { PATH: process.env.PATH, API_CONTEXT_PRODUCT_NAME: 'zqseam' }, stdio: ['ignore', 'pipe', 'inherit'] });
+  let out = '';
+  child.stdout.on('data', chunk => out += chunk);
+  await new Promise(resolve => child.once('close', resolve));
+  assert.deepEqual(JSON.parse(out), ['zqseam', 'sannr']);
+});

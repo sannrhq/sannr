@@ -76,7 +76,10 @@ as any of its rows.
   is the null device (`2>/dev/null`, or a process started with its output
   discarded) neither prints nor records the notice; the next command whose
   output can be read does. On Windows a stream sent to `NUL` is not
-  detected, so the notice is recorded there as before. The MCP server
+  detected, so the notice is recorded there as before. When the write to
+  standard error fails (for example a pipe whose reader has gone), the
+  record just made is removed, nothing is counted for that command, and the
+  next command that can write prints the notice. The MCP server
   attaches no notice to a tool call made by `sannr mcp inspect --execute`,
   which keeps no result text, and records none; if a notice reaches the
   inspector anyway (in a tool result, through a proxy or gateway that
@@ -196,7 +199,9 @@ Each command accepts `--json`.
   `BUILDKITE`, `CIRCLECI`, `JENKINS_URL`, `TF_BUILD`, `TEAMCITY_VERSION`. In
   such a process nothing is counted, no identifier is made, nothing is sent,
   no notice is shown, and no command other than `telemetry` writes the
-  telemetry state. The same holds for a process that a test runner marks
+  telemetry state. The same holds for a process started with
+  `API_CONTEXT_PRODUCT_NAME` set, a variable Sannr's own tests use to rename
+  the product for one process, and for a process that a test runner marks
   (`NODE_TEST_CONTEXT`, `VITEST` or `JEST_WORKER_ID` set); other test runners
   (Mocha, AVA, tap, Bun, Deno) set none of these, so set `SANNR_TELEMETRY=0`
   there.

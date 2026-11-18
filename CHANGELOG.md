@@ -23,7 +23,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   Linux no notice is recorded when the stream it would be written to is the
   null device (standard error, or standard output for `connect`); on Windows
   a stream sent to `NUL` is not detected and the notice is recorded as
-  before. The MCP server attaches none to a tool call made by `mcp inspect`,
+  before. A notice whose write to standard error fails is not recorded.
+  Nothing is counted, sent or shown in a process started with
+  `API_CONTEXT_PRODUCT_NAME` set (a test seam), and the sender's user agent
+  is a fixed name, not one read from the environment. The MCP server attaches none to a tool call made by `mcp inspect`,
   and records none; one that reaches `mcp inspect` anyway (through a proxy
   that renamed it, or in the output of a Sannr command given as its target)
   is printed on its standard error. `sannr telemetry
