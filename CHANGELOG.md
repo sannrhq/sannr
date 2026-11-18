@@ -10,7 +10,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
 
 ## [Unreleased]
 
-## [0.1.0-beta.2] - 2026-11-06
+## [0.1.0-beta.2] - 2026-11-18
 
 - Native Windows is supported from this version: Windows paths and `node.exe`
   are used directly for MCP registration, a package-manager MCP launch runs
