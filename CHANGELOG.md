@@ -33,8 +33,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   reaches `mcp inspect` anyway (through a proxy that renamed it, or in the
   output of a Sannr command given as its target) is printed on its standard
   error. `sannr telemetry off` (or telling the agent "opt out") writes an off
-  marker that holds for every Sannr process run with the same home directory until `telemetry on`,
-  marks at once every other state directory on that home's list (the CLI and
+  marker that holds for every Sannr process run with the same home directory
+  until `telemetry on`, marks at once every other state directory on that home's list (the CLI and
   the MCP server record the directory they use; at most 256, only directories
   that exist), never waits
   for a send in progress, and sends nothing (a document being prepared or on
