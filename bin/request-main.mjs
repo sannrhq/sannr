@@ -5,7 +5,7 @@
 // the budget is measured on the compact form the agent actually receives.
 
 import { basename } from "node:path";
-import { apiRequest, apiReadProbe, runEnvelope, tokens, transportError } from "../lib/client.mjs";
+import { apiRequest, apiReadProbe, missingCredentialWarnings, runEnvelope, tokens, transportFailure } from "../lib/client.mjs";
 import { stackCatalog } from "../lib/stacks.mjs";
 import { resolveConfig } from "../lib/config.mjs";
 import { PRODUCT } from "../lib/brand.mjs";
@@ -139,9 +139,10 @@ if (process.argv[2] === "envelope") {
   let env;
   try { env = JSON.parse(process.argv[3] ?? ""); }
   catch { console.error("envelope must be valid JSON"); process.exit(2); }
-  const result = await runEnvelope({ ...env, ...(stack ? { stack } : {}), ...(environment ? { environment } : {}) }, { initiator: 'cli.request' }).catch(error => ({ ok: false, error: transportError(error) }));
+  const result = await runEnvelope({ ...env, ...(stack ? { stack } : {}), ...(environment ? { environment } : {}) }, { initiator: 'cli.request' }).catch(error => transportFailure(error, { ok: false }));
   const out = JSON.stringify(result, null, 1);
   console.log(out);
+  for (const line of missingCredentialWarnings(result)) console.error(line);
   console.error(`\n--- ${out.length} bytes (~${tokens(out)} tokens)`);
   process.exitCode = result.ok === false || result.error ? 1 : 0;
 }
@@ -196,10 +197,11 @@ if (process.argv[2] && process.argv[2] !== 'envelope') {
     };
   };
   execute()
-    .catch((error) => ({ error: transportError(error) }))
+    .catch((error) => transportFailure(error))
     .then((r) => {
       const out = JSON.stringify(r, null, 1);
       console.log(out);
+      for (const line of missingCredentialWarnings(r)) console.error(line);
       console.error(`\n--- ${out.length} bytes (~${tokens(out)} tokens)`);
       process.exitCode = r.ok === false || r.error ? 1 : 0;
     });

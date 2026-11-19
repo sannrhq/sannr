@@ -319,11 +319,12 @@ async function cmdProtocol(argv) {
   if (!stackCatalog(repoRoot()).stacks.length && !isBuiltinStack(input.stack))
     selectRequestConfig(repoRoot(), environment ?? input.environment);
   if (environment !== undefined) input.environment = environment;
-  const { apiRequest, runEnvelope, transportError } = await import("../lib/client.mjs");
+  const { apiRequest, runEnvelope, transportFailure, missingCredentialWarnings } = await import("../lib/client.mjs");
   let result;
   try { result = Object.hasOwn(input, "requests") ? await runEnvelope(input, { initiator: "cli.protocol" }) : await apiRequest(input, { initiator: "cli.protocol" }); }
-  catch (error) { result = { ok: false, error: transportError(error), attempted: error.requestAttempts ?? 0 }; }
+  catch (error) { result = transportFailure(error, { ok: false, attempted: error.requestAttempts ?? 0 }); }
   console.log(JSON.stringify(result, null, 1));
+  for (const line of missingCredentialWarnings(result)) console.error(line);
   process.exitCode = result.ok ? 0 : 1;
 }
 
@@ -1919,21 +1920,27 @@ async function cmdLearn(argv) {
 
   let learned = 0, failed = 0, drifted = 0, requestAttempts = 0;
   const preview = [], outcomes = [];
-  const { apiLearnRead, transportError } = reads.length ? await import("../lib/client.mjs") : {};
+  const { apiLearnRead, transportError, missingCredentialWarnings } = reads.length ? await import("../lib/client.mjs") : {};
+  // One standard-error line per variable for the whole command, printed after
+  // the reads: "sent" if any read without it got a response, else "attempted".
+  const credentialNotices = [];
   for (const [op, entry] of reads) {
     const [method, path] = op.split(" ");
     let observation;
     try {
       observation = await apiLearnRead({ method, path, onAttempt: () => { requestAttempts += 1; } });
     } catch (error) {
+      if (error?.authMissing) credentialNotices.push({ auth_missing: error.authMissing });
       const detail = transportError(error).code;
       const transportFailed = ["TRANSPORT_FAILED", "REQUEST_TIMEOUT", "ECONNREFUSED", "ECONNRESET",
         "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"].includes(detail);
       if (transportFailed) failed += 1;
       const receipt = { op, outcome: transportFailed ? "unreachable" : "client_failed", code: detail, verified: false };
-      outcomes.push(receipt);
+      // The report (never the recorded knowledge) says the read went out without its credential.
+      const reported = error?.authMissing ? { ...receipt, auth_missing: error.authMissing } : receipt;
+      outcomes.push(reported);
       if (dryRun) {
-        preview.push(transportFailed ? { op, unreachable: detail } : { ...receipt, status: null,
+        preview.push(transportFailed ? { op, unreachable: detail, ...(reported.auth_missing ? { auth_missing: reported.auth_missing } : {}) } : { ...reported, status: null,
           would_promote: { status_codes: [], fields: {} }, would_refuse: [] });
         continue;
       }
@@ -1946,6 +1953,7 @@ async function cmdLearn(argv) {
     }
 
     const { result, status, drift, body, verified } = observation;
+    if (result.auth_missing) credentialNotices.push(result);
     const redirected = drift.some(item => item.kind === "redirect");
     if (redirected) drifted += 1;
     const outcome = verified ? "verified" : status === 401 || status === 403 ? "authentication_failed"
@@ -1953,19 +1961,21 @@ async function cmdLearn(argv) {
     const receipt = { op, outcome, status, verified, evidence: result.evidence ?? null,
       assertions: result.assertions ? { passed: result.assertions.passed, failed: result.assertions.failed } : null,
       ...(result.error?.code ? { code: result.error.code } : {}) };
-    outcomes.push(receipt);
+    // The report (never the recorded knowledge) says the read went out without its credential.
+    const reported = result.auth_missing ? { ...receipt, auth_missing: result.auth_missing } : receipt;
+    outcomes.push(reported);
     const contract = responseSchema(doc, method, path);
     const environment = { name: cfg.name, production: cfg.production };
 
     if (!verified) {
-      if (dryRun) preview.push({ ...receipt, would_promote: { status_codes: [], fields: {} }, would_refuse: [],
+      if (dryRun) preview.push({ ...reported, would_promote: { status_codes: [], fields: {} }, would_refuse: [],
         ...(drift.length ? { drift } : {}) });
       else ctx.operations[op] = recordLearnFailure(entry, { ...receipt, stamp: learnStamp, drift });
       continue;
     }
     if (dryRun) {
       const { promoted, refused } = promotionPreview({ op, body, status, contract, environment });
-      preview.push({ ...receipt, would_promote: { status_codes: promoted.status_codes, fields: promoted.fields },
+      preview.push({ ...reported, would_promote: { status_codes: promoted.status_codes, fields: promoted.fields },
         would_refuse: refused, ...(drift.length ? { drift } : {}) });
       continue;
     }
@@ -1978,6 +1988,7 @@ async function cmdLearn(argv) {
     delete ctx.operations[op].shape_diverged_at;
     learned += 1;
   }
+  if (reads.length) for (const line of missingCredentialWarnings({ results: credentialNotices })) console.error(line);
 
   if (dryRun) {
     // No saveContext or pointer refresh. Private client evidence is retained.
@@ -4133,7 +4144,10 @@ async function cmdSuiteRun(argv) {
   // The client resolves config, context and auth at module load; importing it
   // lazily keeps every other sannr command (init/show/note/…) free of
   // that work and of any env problems it might surface.
-  const { runEnvelope, transportError } = await import("../lib/client.mjs");
+  const { runEnvelope, transportError, missingCredentialWarnings } = await import("../lib/client.mjs");
+  // One line per variable for the whole command, not one per suite, printed
+  // after every suite ran: "sent" if any step without it got a response.
+  const credentialNotices = [];
 
   const reports = [];
   for (const name of names) {
@@ -4159,9 +4173,11 @@ async function cmdSuiteRun(argv) {
         attempted: e.requestAttempts ?? (suite.requests.length ? 1 : 0),
         error: transportError(e) };
     }
+    credentialNotices.push(result, ...(result.results ?? []), ...(result.finally ?? []));
     reports.push({ file: file.slice(root.length + 1), ...suiteReport(suite, result) });
   }
 
+  for (const line of missingCredentialWarnings({ results: credentialNotices })) console.error(line);
   const allOk = reports.every((r) => r.ok);
   const requestAttempts = reports.reduce((sum, report) => sum + report.request_attempts, 0);
   const targetFields = requestAttempts > 0
@@ -4491,7 +4507,10 @@ async function cmdVerify(argv) {
 
   // Lazy for the same reason as cmdSuiteRun: only the commands that execute
   // requests should pay for (or surface problems from) client-side config.
-  const { runEnvelope, transportError } = await import("../lib/client.mjs");
+  const { runEnvelope, transportError, missingCredentialWarnings } = await import("../lib/client.mjs");
+  // One line per variable for the whole command, not one per suite, printed
+  // after every suite ran: "sent" if any step without it got a response.
+  const credentialNotices = [];
 
   const reports = [];
   for (const name of names) {
@@ -4528,12 +4547,14 @@ async function cmdVerify(argv) {
           attempted: e.requestAttempts ?? (retained.length ? 1 : 0),
           error: transportError(e) };
       }
+      credentialNotices.push(result, ...(result.results ?? []), ...(result.finally ?? []));
       report = suiteReport({ ...suite, requests: retained, finally: cleanup }, result);
     }
     if (skipped.length) report.skipped = skipped;
     reports.push({ file: file.slice(root.length + 1), ...report });
   }
 
+  for (const line of missingCredentialWarnings({ results: credentialNotices })) console.error(line);
   const drift = driftFrom(reports);
   const allOk = reports.every((r) => r.ok);
   const requestAttempts = reports.reduce((sum, report) => sum + report.request_attempts, 0);
