@@ -101,7 +101,7 @@ function requireStackMigrationBeforeWriting(root) {
   if (refusal) die(refusal.code, refusal.message, refusal.command);
 }
 
-import { cliStart, noticeText, takeConnectNotice, telemetryStatus, telemetryShow, telemetryOff, telemetryOn, telemetryReset, renderStatus, renderShow } from '../lib/telemetry.mjs';
+import { cliStart, noticeText, printOnNotice, takeConnectNotice, telemetryStatus, telemetryShow, telemetryOff, telemetryOn, telemetryReset, renderStatus, renderShow } from '../lib/telemetry.mjs';
 import { LAYOUT, LEGACY_LAYOUT, layoutFor, planLayout, ensureLayout, inspectLayoutReadme, legacyLayoutEntries, migrateLayout, projectedLayoutFiles } from "../lib/layout.mjs";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -5975,7 +5975,11 @@ function cmdTelemetry(argv) {
       if (value.still_off.length) parts.push(`These state directories were turned off themselves and stay off until telemetry on is run with them: ${value.still_off.join(", ")}.`);
       if (value.not_lifted.length) parts.push(`These state directories could not be lifted and stay off: ${value.not_lifted.join(", ")}.`);
       if (value.overridden_by) parts.push(`${value.overridden_by.variable ?? "This environment"} still turns it off for processes that have it.`);
-      print(value, [parts.filter(Boolean).join(" "), ...(value.notice ? [value.notice] : [])].join("\n"));
+      const human = [parts.filter(Boolean).join(" "), ...(value.notice ? [value.notice] : [])].join("\n");
+      // A directory never told gets the notice in this output; it is recorded
+      // as printed only once the output was written where it can be read.
+      if (value.notice) printOnNotice(json ? JSON.stringify(value, null, 1) : human);
+      else print(value, human);
     } else {
       const value = telemetryReset();
       print(value, value.changed ? "The install identifier is deleted; a new one is made at the next document. This adds no document to the day."

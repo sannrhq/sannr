@@ -2005,3 +2005,161 @@ test('R2: the sender\'s user agent name is fixed, whatever the seam says', async
   await new Promise(resolve => child.once('close', resolve));
   assert.deepEqual(JSON.parse(out), ['zqseam', 'sannr']);
 });
+
+// --- QA-L2-02: telemetry on records the notice only where it was printed --------
+// `telemetry on` prints the notice in its output (standard output) on a state
+// directory never told. Where that output is the null device nobody can read
+// it, so it is not recorded: the directory is on and still owes the notice,
+// the next command that can show it prints it, and the 24 hours start there.
+const quietly = (m, args, { stdout = 'ignore', stderr = 'ignore', env = {} } = {}) =>
+  runCli(CLI, args, { cwd: m.root, env: { ...m.env, ...env }, stdout, stderr });
+const noticeCount = text => (text.match(new RegExp(NOTICE.source, 'g')) ?? []).length;
+
+test('telemetry on whose output is the null device turns on but records no notice; the next readable command prints it and the wait starts there', async t => {
+  for (const [label, start, streams] of [
+    ['fresh, both streams discarded', 'fresh', {}],
+    ['fresh, standard output discarded', 'fresh', { stderr: 'pipe' }],
+    ['off before ever told, both discarded', 'off', {}]]) {
+    const m = machine(t);
+    if (start === 'off') assert.equal((await quietly(m, ['telemetry', 'off'])).code, 0, label);
+    const on = await quietly(m, ['telemetry', 'on'], streams);
+    assert.equal(on.code, 0, `${label}: ${on.stderr}`);
+    assert.doesNotMatch(on.stderr, NOTICE, `${label}: the notice moved to standard error`);
+    const status = json(await m.run(['telemetry', 'status', '--json']));
+    assert.equal(status.state, 'on', label);
+    assert.equal(status.notice_emitted_at, null, `${label}: telemetry on recorded a notice nobody could read`);
+    assert.equal(status.sending, false, label);
+    assert.match((await m.run(['telemetry', 'status'])).stdout, /The notice has not been printed for this state directory/, label);
+    // A command on the null device neither prints, records nor counts.
+    assert.equal((await quietly(m, ['--version'])).code, 0);
+    assert.equal(m.readState().noticed_at, null, `${label}: a command on the null device recorded the notice`);
+    assert.equal(existsSync(m.counts), false, `${label}: a command was counted before the notice was printed`);
+    m.advance(20);
+    const told = await m.run(['stacks', '--json']);
+    assert.equal(noticeCount(told.stderr), 1, `${label}: the next readable command did not print the notice: ${told.stderr}`);
+    const noticedAt = Date.parse(m.readState().noticed_at);
+    assert.ok(noticedAt >= START + 20 * 3_600_000, `${label}: the wait did not start at the printed notice`);
+    assert.doesNotMatch((await m.run(['--version'])).stderr, NOTICE, `${label}: the notice was printed twice`);
+    m.advance(5); // 25 hours after on, 5 after the notice
+    await m.run(['--version']);
+    await m.settle();
+    assert.deepEqual(usagePosts(m), [], `${label}: a document went out within 24 hours of the notice`);
+    m.advance(20); // 25 hours after the notice
+    await m.run(['--version']);
+    await m.settle();
+    assert.equal(usagePosts(m).length, 1, label);
+    assert.deepEqual(JSON.parse(usagePosts(m)[0].body).features, { stacks: 1, version: 2 },
+      `${label}: a command from before the notice was counted`);
+  }
+});
+
+test('telemetry on with readable output prints the notice once and records it; a file counts as readable', async t => {
+  for (const [label, args, stdout] of [['plain', ['telemetry', 'on'], 'pipe'], ['--json', ['telemetry', 'on', '--json'], 'pipe'], ['to a file', ['telemetry', 'on'], 'file']]) {
+    const m = machine(t);
+    const file = join(m.parent, 'out.txt'), fd = stdout === 'file' ? openSync(file, 'w') : null;
+    let on;
+    try { on = await quietly(m, args, { stdout: fd ?? 'pipe', stderr: 'pipe' }); } finally { if (fd !== null) closeSync(fd); }
+    const out = fd !== null ? readFileSync(file, 'utf8') : on.stdout;
+    assert.equal(on.code, 0, `${label}: ${on.stderr}`);
+    assert.equal(noticeCount(out), 1, `${label}: ${out}`);
+    if (label === '--json') assert.match(JSON.parse(out).notice, NOTICE);
+    assert.ok(m.readState().noticed_at, `${label}: the printed notice was not recorded`);
+    assert.equal(m.readState().state, 'on');
+    assert.doesNotMatch((await m.run(['--version'])).stderr, NOTICE, `${label}: the next command repeated the notice`);
+  }
+});
+
+test('a command whose notice write fails, in a directory telemetry on left owing the notice, records and counts nothing', async t => {
+  if (process.platform === 'win32') { t.skip('needs sh and a pipe whose reader has gone'); return; }
+  const m = machine(t);
+  assert.equal((await quietly(m, ['telemetry', 'on'])).code, 0);
+  const owed = readFileSync(m.stateFile, 'utf8');
+  assert.equal(JSON.parse(owed).noticed_at, null);
+  await new Promise((resolve, reject) => {
+    const child = spawn('/bin/sh', ['-c', '{ sleep 0.4; exec "$0" "$1" --version; } 2>&1 >/dev/null | :', process.execPath, CLI], { cwd: m.root, env: m.env, stdio: 'ignore' });
+    child.once('error', reject);
+    child.once('close', resolve);
+  });
+  assert.equal(readFileSync(m.stateFile, 'utf8'), owed, 'a notice nobody received was recorded');
+  assert.equal(existsSync(m.counts), false, 'the command whose notice failed was counted');
+  const told = await m.run(['--version']);
+  assert.equal(noticeCount(told.stderr), 1, told.stderr);
+  assert.ok(m.readState().noticed_at);
+});
+
+test('the MCP server records no notice when its standard output is the null device; to a file it does', async t => {
+  const serve = async (m, stdout) => {
+    const child = spawn(process.execPath, [CLI, 'mcp', 'serve'], { cwd: m.root, env: { ...m.env, API_CONTEXT_DIR: m.root }, stdio: ['pipe', stdout, 'ignore'] });
+    const exited = new Promise(resolve => child.once('close', resolve));
+    const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
+    const messages = [{ id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test' } } },
+      { id: 2, method: 'tools/call', params: { name: 'api_saved_requests', arguments: { action: 'list' } } }];
+    child.stdin.end(messages.map(message => JSON.stringify({ jsonrpc: '2.0', ...message })).join('\n') + '\n');
+    await exited; clearTimeout(timer);
+  };
+  const guard = machine(t);
+  const file = join(guard.parent, 'out.jsonl'), fd = openSync(file, 'w');
+  try { await serve(guard, fd); } finally { closeSync(fd); }
+  assert.match(readFileSync(file, 'utf8'), NOTICE, 'the server did not answer the tool call');
+  assert.equal(noticesRecorded(guard.state), 1);
+  const m = machine(t);
+  await serve(m, 'ignore');
+  assert.equal(existsSync(m.stateFile), false, 'the server recorded a notice it wrote to the null device');
+});
+
+test('a home turned off before it was told and turned on from another state directory owes its own notice, then is told once', async t => {
+  const m = machine(t);
+  const user = join(m.home, `.${PRODUCT}`), inUser = { [HOME_ENV_NAME]: user };
+  assert.equal((await quietly(m, ['telemetry', 'off'], { env: inUser })).code, 0);
+  assert.equal((await m.run(['telemetry', 'on'])).code, 0);
+  assert.equal(m.readState(join(user, 'telemetry.json')).noticed_at, null);
+  const told = await m.run(['--version'], { env: inUser });
+  assert.equal(noticeCount(told.stderr), 1, told.stderr);
+  assert.ok(m.readState(join(user, 'telemetry.json')).noticed_at);
+  assert.doesNotMatch((await m.run(['--version'], { env: inUser })).stderr, NOTICE);
+});
+
+// A short write of the notice to standard error: a preload makes the first
+// write that carries the notice write only its first 100 bytes, as a full
+// non-blocking pipe can; in `fail` mode the next write to standard error then
+// fails as a pipe whose reader has gone does.
+function shortWritePreload(m, mode) {
+  const file = join(m.parent, `short-write-${mode}.mjs`);
+  writeFileSync(file, `import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const real = fs.writeSync;
+let armed = false;
+fs.writeSync = function (fd, buffer, ...rest) {
+  if (fd === 2) {
+    const bytes = typeof buffer === 'string' ? Buffer.from(buffer) : Buffer.from(buffer.subarray(typeof rest[0] === 'number' ? rest[0] : 0));
+    if (!armed && bytes.toString('utf8').includes('once a day')) { armed = true; return real.call(fs, fd, bytes.subarray(0, 100)); }
+    if (armed && ${JSON.stringify(mode)} === 'fail') throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+  }
+  return real.call(fs, fd, buffer, ...rest);
+};
+syncBuiltinESMExports();
+`);
+  return { NODE_OPTIONS: `${m.env.NODE_OPTIONS} --import=${pathToFileURL(file).href}` };
+}
+
+test('the notice is recorded only once all of it was written to standard error; a write that fails part way records and counts nothing', async t => {
+  const { noticeText } = await import('../lib/telemetry.mjs');
+  {
+    const m = machine(t);
+    const run = await m.run(['--version'], { env: shortWritePreload(m, 'short') });
+    assert.equal(run.code, 0, run.stderr);
+    // The whole notice, first word to last (its command name depends on how the CLI was started).
+    const [first, last] = [noticeText().slice(0, 40), noticeText().slice(-60)];
+    assert.ok(run.stderr.startsWith(first) && run.stderr.endsWith(`${last}\n`) && noticeCount(run.stderr) === 1,
+      `a short write left the notice cut off: ${JSON.stringify(run.stderr)}`);
+    assert.ok(m.readState().noticed_at, 'the whole notice was written but not recorded');
+  }
+  const m = machine(t);
+  const cut = await m.run(['--version'], { env: shortWritePreload(m, 'fail') });
+  assert.equal(cut.code, 0, cut.stderr);
+  assert.equal(Buffer.byteLength(cut.stderr), 100, 'the preload did not cut the write');
+  assert.equal(existsSync(m.stateFile), false, 'a notice written only in part was recorded');
+  assert.equal(existsSync(m.counts), false, 'the command whose notice was cut off was counted');
+  const told = await m.run(['--version']);
+  assert.equal(noticeCount(told.stderr), 1, told.stderr);
+});
