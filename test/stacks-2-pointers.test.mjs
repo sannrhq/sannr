@@ -177,7 +177,7 @@ async function assertMatchesSecondConnect(f, before, label) {
   return after;
 }
 
-test('QA-L1-01 stack add refreshes the managed blocks to what a second connect writes, keeping team text', async t => {
+test('stack add refreshes the managed blocks to what a second connect writes, keeping team text', async t => {
   const f = fixture(t);
   const before = await connectedWithTeamText(f);
   assert.match(agentFiles(f)[0], /No OpenAPI contract was selected/);
@@ -196,7 +196,7 @@ test('QA-L1-01 stack add refreshes the managed blocks to what a second connect w
   for (const text of second) assert.ok(section(text, 'orders') && section(text, 'bare'), text);
 });
 
-test('QA-L4-07 connect after stack add describes each stack, not a missing legacy file', async t => {
+test('connect after stack add describes each stack, not a missing legacy file', async t => {
   const f = fixture(t);
   await connect(f);
   for (const name of ['orders', 'billing']) {
@@ -218,7 +218,7 @@ test('QA-L4-07 connect after stack add describes each stack, not a missing legac
   assert.equal(report.setup.api.next, undefined, 'both stacks have a base URL');
 });
 
-test('QA-L1-01 stack move and stack import refresh the managed blocks to what a second connect writes', async t => {
+test('stack move and stack import refresh the managed blocks to what a second connect writes', async t => {
   const f = fixture(t);
   stack(f, 'alpha', []);
   stack(f, 'unsorted', ['An unfiled operation lesson.'], { empty: true });
@@ -238,7 +238,7 @@ test('QA-L1-01 stack move and stack import refresh the managed blocks to what a 
   assert.ok(section(afterImport[0], 'pets'), afterImport[0]);
 });
 
-test('QA-L1-01 stack add in a repository that never ran connect writes no agent file', async t => {
+test('stack add in a repository that never ran connect writes no agent file', async t => {
   const f = fixture(t);
   const claude = readFileSync(join(f.root, 'CLAUDE.md'), 'utf8');
   const report = JSON.parse(await run(f, ['stack', 'add', 'orders', '--base-url', 'http://127.0.0.1:9/v1', '--json']));
@@ -247,7 +247,7 @@ test('QA-L1-01 stack add in a repository that never ran connect writes no agent 
   assert.throws(() => readFileSync(join(f.root, 'AGENTS.md')), { code: 'ENOENT' });
 });
 
-test('QA-FIX-1 A4 init --contract after connect refreshes the managed blocks to what a second connect writes', async t => {
+test('init --contract after connect refreshes the managed blocks to what a second connect writes', async t => {
   const f = fixture(t);
   const before = await connectedWithTeamText(f);
   writeJson(join(f.root, 'api', 'orders.json'), { openapi: '3.0.3', info: { title: 'Orders', version: '1' },
@@ -270,7 +270,7 @@ async function runAny(f, args) {
   return { exit, stdout, stderr };
 }
 
-test('QA-FIX-1 A4 a refresh that writes one file and fails on the other names each file', async t => {
+test('a refresh that writes one file and fails on the other names each file', async t => {
   const f = fixture(t);
   await connectedWithTeamText(f);
   const claudePath = join(f.root, 'CLAUDE.md'), claude = readFileSync(claudePath, 'utf8');
@@ -289,7 +289,7 @@ test('QA-FIX-1 A4 a refresh that writes one file and fails on the other names ea
   assert.match(report.pointers.failures[0].reason, /^The stack change was saved, but CLAUDE\.md could not be refreshed/);
 });
 
-test('QA-FIX-1 A4 a malformed block names the file and asks for the markers to be repaired', async t => {
+test('a malformed block names the file and asks for the markers to be repaired', async t => {
   const f = fixture(t);
   await connectedWithTeamText(f);
   const agentsPath = join(f.root, 'AGENTS.md');
@@ -303,7 +303,7 @@ test('QA-FIX-1 A4 a malformed block names the file and asks for the markers to b
   assert.equal(readFileSync(agentsPath, 'utf8'), agents, 'a malformed block is left as it is');
 });
 
-test('QA-FIX-1 A4 connect with several stacks lists every stack, marks the default and keeps evidence_classes', async t => {
+test('connect with several stacks lists every stack, marks the default and keeps evidence_classes', async t => {
   const f = fixture(t);
   await connect(f);
   for (const name of ['orders', 'billing', 'zeta']) await run(f, ['stack', 'add', name, '--base-url', `http://127.0.0.1:9/${name}`]);
@@ -332,9 +332,9 @@ test('QA-FIX-1 A4 connect with several stacks lists every stack, marks the defau
   }
 });
 
-// A7 item 1: the refresh stops at its first failure (shared with note), and
+// The refresh stops at its first failure (shared with note), and
 // the report names every file: written, failed with its reason, not attempted.
-test('QA-FIX-1 A7 a failed refresh names the files written, the one that failed and those not attempted', async t => {
+test('a failed refresh names the files written, the one that failed and those not attempted', async t => {
   const cases = [
     ['read-only AGENTS.md', f => chmodSync(join(f.root, 'AGENTS.md'), 0o444),
       { written: [], failed: 'AGENTS.md', code: 'POINTER_WRITE_FAILED', notAttempted: ['CLAUDE.md'] }],
@@ -372,8 +372,8 @@ test('QA-FIX-1 A7 a failed refresh names the files written, the one that failed 
   }
 });
 
-// A7 item 4: no canned cause the failure did not report.
-test('QA-FIX-1 A7 a hard-linked AGENTS.md is reported with its own reason, not as an irregular file', async t => {
+// No canned cause the failure did not report.
+test('a hard-linked AGENTS.md is reported with its own reason, not as an irregular file', async t => {
   const f = fixture(t);
   await connectedWithTeamText(f);
   const agents = join(f.root, 'AGENTS.md'), copy = join(f.root, 'team', 'agents.md');
@@ -386,7 +386,7 @@ test('QA-FIX-1 A7 a hard-linked AGENTS.md is reported with its own reason, not a
   assert.match(result.stdout, /Fix AGENTS\.md as the reason above says, then run .* connect/, result.stdout);
 });
 
-test('QA-FIX-1 A7 a failure without a file and a file changed mid-refresh get advice that fits', () => {
+test('a failure without a file and a file changed mid-refresh get advice that fits', () => {
   const unnamed = stackRefreshLines({ state: 'failed', files: [], failures: [{ code: 'CONTEXT_UNAVAILABLE',
     reason: 'The stack change was saved, but the managed instruction blocks could not be refreshed: the saved context is unavailable.' }] }, 'cli');
   assert.equal(unnamed[0], 'Managed instructions not refreshed (CONTEXT_UNAVAILABLE): The stack change was saved, but the managed instruction blocks could not be refreshed: the saved context is unavailable.');
@@ -399,10 +399,10 @@ test('QA-FIX-1 A7 a failure without a file and a file changed mid-refresh get ad
   assert.equal(changed[2], 'Managed instructions not attempted because of that failure: CLAUDE.md.');
 });
 
-// A7 item 3: the advice after a failed refresh must work when followed. On
+// The advice after a failed refresh must work when followed. On
 // init's first-stack path, repeating init would refuse (the stack binds its
 // own copy of the contract), so the advice is: fix the file, run connect.
-test('QA-FIX-1 A7 init after a failed refresh advises fixing the file and running connect, and that works', async t => {
+test('init after a failed refresh advises fixing the file and running connect, and that works', async t => {
   const f = fixture(t);
   const before = await connectedWithTeamText(f);
   writeJson(join(f.root, 'api', 'orders.json'), { openapi: '3.0.3', info: { title: 'Orders', version: '1' },
@@ -423,7 +423,7 @@ test('QA-FIX-1 A7 init after a failed refresh advises fixing the file and runnin
   for (const text of after) assert.ok(section(text, 'orders'), text);
 });
 
-test('QA-FIX-1 A7 init gives the repair-the-markers advice for a malformed block, as stack add does', async t => {
+test('init gives the repair-the-markers advice for a malformed block, as stack add does', async t => {
   const f = fixture(t);
   await connectedWithTeamText(f);
   writeJson(join(f.root, 'api', 'orders.json'), { openapi: '3.0.3', info: { title: 'Orders', version: '1' },
@@ -436,7 +436,7 @@ test('QA-FIX-1 A7 init gives the repair-the-markers advice for a malformed block
   assert.match(pointers.retry, /Fix the named file, then run .* connect/);
 });
 
-// A7 item 2: stack import reports a refresh the same way stack add does.
+// Stack import reports a refresh the same way stack add does.
 function petsSource(t, name = 'pets') {
   const source = mkdtempSync(join(tmpdir(), 'stacks-2-pointers-source-'));
   t.after(() => rmSync(source, { recursive: true, force: true }));
@@ -444,7 +444,7 @@ function petsSource(t, name = 'pets') {
     environments: { local: { baseUrl: `https://${name}.example.test` } } });
   return source;
 }
-test('QA-FIX-1 A7 stack import reports its refresh file by file with the stack wording and advice', async t => {
+test('stack import reports its refresh file by file with the stack wording and advice', async t => {
   const ok = fixture(t);
   await connectedWithTeamText(ok);
   const success = await run(ok, ['stack', 'import', petsSource(t), '--stack', 'pets']);

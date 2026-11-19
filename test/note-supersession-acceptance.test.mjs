@@ -408,7 +408,7 @@ test('QA show --human prints each note\'s evidence under that note and none unde
   assert.deepEqual(json, shown, 'JSON output is unchanged by the human rendering');
 });
 
-// A4 item 6: stack facts printed each review line above its fact and never
+// Stack facts printed each review line above its fact and never
 // printed a fact's evidence.
 test('QA show --human prints each stack fact\'s review line and evidence under that fact', async t => {
   const f = await httpFixture(t);
