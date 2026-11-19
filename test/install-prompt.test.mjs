@@ -30,7 +30,7 @@ test('a canonical prompt edit updates its README quote without changing neighbor
   assert.throws(() => readmeInstallExcerpt(source.replace('What it does:', 'More information:')), /What it does/);
 });
 
-test('the prompt\'s usage sentence names everything the first-run notice says is sent (QA-L1-07)', async () => {
+test('the prompt\'s usage sentence names everything the first-run notice says is sent', async () => {
   const { noticeText } = await import('../lib/telemetry.mjs');
   const notice = noticeText();
   const usage = /Sannr sends usage counts once a day: .*?APIs or requests\./.exec(read('docs/install-prompt.md'))?.[0];
