@@ -136,7 +136,11 @@ JSON-escaped and base64-encoded, never from inside a longer value. So an id
 such as `1` leaves the host, port and `Date` header of the record intact,
 while a field whose whole value is `1` (a header such as
 `x-ratelimit-remaining: 1`, a body field `"page": "1"`) still reads
-`[redacted]`. An input whose declaration names an environment source is a
+`[redacted]`. A typed value under six characters that the API returns inside
+a longer property name is not removed from that name, and field names are
+what the client records in the committed knowledge file: declare a value that
+must never be committed with an environment source, or make it six
+characters or more. An input whose declaration names an environment source is a
 secret by declaration (a short PIN or key), whether its value was read from
 the variable or supplied by the caller and whatever its `sensitive` flag
 says: it is removed wherever it appears, whatever its length, as a configured
@@ -151,10 +155,13 @@ in the usage log row, `ts`, `project`, `origin` (the fixed word `own`,
 `mode`, `authUsed`, `tokenRefreshed`, `idempotencyKeySent`, `purpose`,
 `target_source`, `laneWidth`, `throttled`, `throttleWaitMs`, `ms`, `rawBytes`,
 `envelopeBytes`, `tokensSaved`, `contractLoaded`, `pagesFetched`, the `drift`
-kinds, `knownOp`, `knownNotes`, `knownProviderHash`, `friction`, `known`,
+kinds, `knownNotes`, `knownProviderHash`, `friction`, `known`,
 `runId` and `session_id`. The row's `path`, `queryKeys` and `host` come from
-the request URL and `rateLimitRemaining` from the API's headers; they, and
-any field not listed here, are scrubbed for inputs. A run record's `drift`
+the request URL and `rateLimitRemaining` from the API's headers; `knownOp` is
+the matched operation, which without a bound contract is the method and the
+concrete path. They, and any field not listed here, are scrubbed for inputs,
+so a typed value equal to a word of an operation template can alter that
+template in the row. A run record's `drift`
 entries quote what the API returned and are scrubbed like the response.
 Configured credentials are not inputs and keep the full scrub of the whole
 record, short values included. An input whose declaration omits `sensitive`
