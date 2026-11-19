@@ -1,7 +1,7 @@
 # Routine CI runs core safety only; full qualification is an explicit manual
 # dispatch or a release gate. No artifacts, release or publication here.
 # Keep Package gates as the existing required check name on main.
-# Windows runs bounded core/native lanes on every PR; the serial full product run
+# Windows runs bounded core, native and usage-counts lanes on every PR; the serial full product run
 # on Windows is the manual windows_full dispatch input.
 name: CI
 
@@ -31,12 +31,13 @@ jobs:
   windows:
     name: Windows ${{ matrix.lane }} (Node ${{ matrix.node }})
     runs-on: windows-latest
-    timeout-minutes: 10
+    # One ceiling for the three lanes; safety and native-workbench end in a few minutes.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         node: [22, 24]
-        lane: [safety, native-workbench]
+        lane: [safety, native-workbench, usage]
     steps:
       - name: Check out the source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,6 +54,11 @@ jobs:
         run: |
           if ($env:WINDOWS_TEST_LANE -eq 'safety') {
             npm test 2>&1 | Tee-Object -FilePath windows.log
+          } elseif ($env:WINDOWS_TEST_LANE -eq 'usage') {
+            # The usage counts tests start many short processes and need more
+            # than the full suite's 180 seconds a file on a hosted Windows runner.
+            # The stack import file needs more than the native lane's 60 seconds there.
+            node --test --test-timeout=900000 --test-reporter=tap test/telemetry.test.mjs test/workbench-usage.test.mjs test/stack-import.test.mjs 2>&1 | Tee-Object -FilePath windows.log
           } else {
             node --test --test-timeout=60000 --test-reporter=tap test/native-platform.test.mjs test/alpha4-durable-mcp.test.mjs test/workbench-control.test.mjs test/workbench-agent.test.mjs test/workbench-engine.test.mjs test/workbench-server.test.mjs test/workbench-session.test.mjs 2>&1 | Tee-Object -FilePath windows.log
           }

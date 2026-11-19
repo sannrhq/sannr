@@ -1,0 +1,4 @@
+# test/telemetry.test.mjs pins these two files by SHA-256 (A16, USE-1-13) and the
+# package ships them: every checkout writes them with LF, whatever core.autocrlf says.
+lib/usage-features.json text eol=lf
+lib/usage.schema.json text eol=lf

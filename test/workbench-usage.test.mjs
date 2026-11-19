@@ -94,7 +94,15 @@ globalThis.fetch = async (url, init = {}) => {
     // Stop the service a test started, whatever state the test ended in.
     await cli(['workbench', 'stop', '--project', root]).catch(() => {});
     await new Promise(done => api.close(done));
-    rmSync(base, { recursive: true, force: true });
+    // A child that has just ended can still hold a directory on Windows, and Node 22's
+    // rmSync does not retry a directory that is busy at its first rmdir: wait here,
+    // about five seconds, then let the error fail the test.
+    for (let attempt = 1; ; attempt++) {
+      try { rmSync(base, { recursive: true, force: true }); break; } catch (error) {
+        if (attempt === 10 || !['EBUSY', 'ENOTEMPTY', 'EPERM'].includes(error.code)) throw error;
+        await new Promise(done => setTimeout(done, attempt * 100));
+      }
+    }
   });
   const lines = () => { try { return readFileSync(join(state, 'telemetry', 'counts.jsonl'), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line)); } catch { return []; } };
   return {
