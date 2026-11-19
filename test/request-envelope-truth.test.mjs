@@ -431,3 +431,15 @@ test('the notice names a legacy environment, a hosts entry, API_AUTH and OAuth r
   assert.deepEqual(forms[3][0].env, ['QAFIX_CID', 'QAFIX_SECRET']);
   assert.equal(calls.includes('/token'), false, 'OAuth with unset client variables never reaches the token endpoint');
 });
+
+// The notice is the client's own structure: a credential whose value happens to
+// equal one of its key names must not rename or collapse those keys. Its
+// values are still scrubbed like any other.
+test('a credential equal to a key name cannot rename the missing-credential notice', async () => {
+  const { scrubForTest } = await import(clientUrl);
+  const notice = { code: 'AUTH_ENV_MISSING', env: ['LAB_TOKEN'], sent_without_credentials: true, message: 'm', next: 'n' };
+  const out = JSON.parse(scrubForTest(JSON.stringify({ ok: true, status: 200, auth_missing: notice }), ['env', 'next', 'code', 'LAB_TOKEN'], 'envelope'));
+  assert.deepEqual(Object.keys(out.auth_missing), Object.keys(notice), 'every key of the notice survives under its own name');
+  assert.deepEqual(out.auth_missing.env, ['[redacted]'], 'a value equal to a credential is still removed');
+  assert.equal(out.auth_missing.code, 'AUTH_ENV_MISSING');
+});
