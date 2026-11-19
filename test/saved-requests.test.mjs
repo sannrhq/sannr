@@ -2,10 +2,10 @@ import './helpers/isolated-home.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, symlinkSync, cpSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, symlinkSync, cpSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { LAYOUT } from '../lib/layout.mjs';
 import { HOME_ENV_NAME } from '../lib/brand.mjs';
 import { createFixtureStack } from './helpers/stack-fixture.mjs';
@@ -602,4 +602,54 @@ test('the usage row\'s origin is a fixed word the client writes; a typed value e
   const row = readFileSync(f.env.API_USAGE_LOG, 'utf8').trim().split('\n').map(line => JSON.parse(line)).find(r => r.runId === result.evidence);
   assert.equal(row.origin, 'own');
   assert.equal(JSON.parse(readFileSync(join(f.root, LAYOUT.evidence, 'fixture', `${result.evidence}.json`), 'utf8')).request.headers['x-note'], R);
+});
+
+// Review of PR 25, condition 1. With no contract the operation the client
+// matched is the method and the concrete path, and an unusable file in
+// .sannr/requests makes the saved-request context attach to it as known.op.
+// The usage row's knownOp must then be scrubbed like everything else.
+test('on a stack with no contract, a private path value never reaches the usage row, a stored file or the receipt', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'no-contract-scrub-')), seen = [];
+  const server = createServer((req, res) => { seen.push(req.url); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, result: { id: 7 } })); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await new Promise(resolve => server.close(resolve)); rmSync(root, { recursive: true, force: true }); });
+  execFileSync('git', ['init', '--quiet'], { cwd: root });
+  const home = join(root, 'home'), state = join(root, 'machine');
+  mkdirSync(home, { recursive: true });
+  const env = { PATH: process.env.PATH, HOME: home, [HOME_ENV_NAME]: state, API_CONTEXT_DIR: root, API_BUDGET: '6000', API_FRICTION_OFF: '1', NO_COLOR: '1' };
+  const cli = args => spawnSync(process.execPath, [new URL('../bin/cli.mjs', import.meta.url).pathname, ...args], { cwd: root, env, encoding: 'utf8', timeout: 60_000 });
+  const added = cli(['stack', 'add', 'nocon', '--base-url', `http://127.0.0.1:${server.address().port}`]);
+  assert.equal(added.status, 0, added.stderr + added.stdout);
+  const fact = cli(['note', '--stack', 'nocon', '--scope', 'stack', 'Documented: the bot API answers ok true on success.']);
+  assert.equal(fact.status, 0, fact.stderr + fact.stdout);
+  const saved = saveSavedRequest(root, { kind: 'saved-request', format_version: 1, folder: 'nocon', name: 'getme', stack: 'nocon', environment: JSON.parse(readFileSync(join(root, LAYOUT.collection, 'nocon', 'stack.json'), 'utf8')).default_environment,
+    request: { method: 'GET', path: '/bot/{token}/getMe', bindings: { path: { token: { $input: 'path_token' } }, headers: { 'x-pin': { $input: 'pin' } } } },
+    inputs: { path_token: { type: 'string', sensitive: true }, pin: { type: 'string', source: { env: 'BOT_PIN' } } }, credentials: [] });
+  writeFileSync(join(root, LAYOUT.requests, 'nocon', 'damaged.json'), '{ not json');
+  const token = 'pathsecret-Zq5a-long', pin = 'Kx7Q';
+  assert.equal(token.length, 20);
+  const script = `const api=await import(${JSON.stringify(moduleUrl)}); console.log(JSON.stringify(await api.runSavedRequest(process.cwd(), ${JSON.stringify(saved.ref)}, { inputs: { path_token: ${JSON.stringify(token)} }, initiator: 'cli.saved' })));`;
+  // Asynchronous, so this process's loopback server can answer.
+  const run = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: root, env: { ...env, BOT_PIN: pin }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = ''; child.stdout.on('data', c => stdout += c); child.stderr.on('data', c => stderr += c);
+    const timer = setTimeout(() => child.kill(), 60_000);
+    child.once('error', reject); child.once('close', status => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const result = JSON.parse(run.stdout);
+  assert.equal(result.status, 200, run.stdout);
+  assert.deepEqual(seen, [`/bot/${token}/getMe`]);
+  assert.ok(!run.stdout.includes(token) && !run.stdout.includes(pin));
+  const files = [];
+  const walk = dir => { for (const entry of existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []) { const path = join(dir, entry.name); if (entry.isDirectory()) walk(path); else if (entry.isFile()) files.push(path); } };
+  walk(state); walk(home); walk(join(root, '.sannr'));
+  assert.ok(files.some(file => file.endsWith('usage.jsonl')), 'the usage log was written');
+  const row = readFileSync(files.find(file => file.endsWith('usage.jsonl')), 'utf8').trim().split('\n').map(line => JSON.parse(line)).find(r => r.runId === result.evidence);
+  assert.ok(row.knownNotes > 0, 'a stack fact was delivered on the row');
+  for (const file of files) for (const value of [token, pin]) assert.ok(!readFileSync(file, 'utf8').includes(value), `${file} holds a private value`);
+  const human = cli(['receipt']), machine = cli(['receipt', '--json']);
+  assert.equal(machine.status, 0, machine.stderr);
+  assert.ok(JSON.parse(machine.stdout).gotchas.operations.length > 0, 'the receipt lists the operation');
+  for (const output of [human.stdout, human.stderr, machine.stdout, machine.stderr]) for (const value of [token, pin]) assert.ok(!output.includes(value), 'the receipt prints a private value');
 });
