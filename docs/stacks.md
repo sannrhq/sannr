@@ -128,7 +128,10 @@ its operation count and the `stack move` command.
 they list the stacks that now exist: the new block is the one a second
 `connect` would write. Only blocks `connect` already wrote are rewritten, and
 text outside them is left as it was; a repository that never ran `connect`
-gets no agent file. The text output ends with `Managed instructions: written
+gets no agent file. When neither file holds a block there is nothing to
+refresh, so a `CLAUDE.md` or `AGENTS.md` that is a symbolic or hard link is
+left alone and the command succeeds (`pointers` is `unchanged` with no files).
+Once a block exists, such a file is reported as below. The text output ends with `Managed instructions: written
 (AGENTS.md).` (or `unchanged`); `--json`, and `init`'s JSON, carry the same
 result as `pointers`.
 

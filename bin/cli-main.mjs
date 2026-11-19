@@ -614,7 +614,7 @@ function refreshStackPointers(root, selectScope, saved = 'The stack change was s
   try { scope = selectScope(); }
   catch (error) { return withStackAdvice({ state: 'failed', files: [], failures: [{ code: error.code ?? 'POINTER_WRITE_FAILED',
     reason: `${saved}, but the managed instruction blocks could not be refreshed.` }] }); }
-  return withStackAdvice(withStackScope(scope, () => refreshNotePointers(root, STACK_REFRESH_RETRY, { saved })));
+  return withStackAdvice(withStackScope(scope, () => refreshNotePointers(root, STACK_REFRESH_RETRY, { saved, onlyWithBlock: true })));
 }
 // The report and per-failure advice live in lib/note-pointers.mjs so they
 // can be tested without running a command.

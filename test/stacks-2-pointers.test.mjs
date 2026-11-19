@@ -471,3 +471,36 @@ test('QA-FIX-1 A7 stack import reports its refresh file by file with the stack w
   assert.ok(stray.stdout.includes(`Repair the block's markers in AGENTS.md: it needs exactly one ${POINTER_BEGIN} followed by one ${POINTER_END}.`), stray.stdout);
   assert.ok(stray.stdout.includes('not attempted because of that failure: CLAUDE.md.'), stray.stdout);
 });
+
+// With no managed block anywhere there is nothing to refresh, so a pointer
+// file the refresh cannot inspect is not a failure of a stack command.
+test('a never-connected repository with a linked CLAUDE.md or AGENTS.md adds a stack and runs init without a refresh failure', async t => {
+  const layouts = [
+    ['CLAUDE.md as a symbolic link to AGENTS.md', f => {
+      writeFileSync(join(f.root, 'AGENTS.md'), '# Team rules\n\nKeep this line.\n');
+      rmSync(join(f.root, 'CLAUDE.md')); symlinkSync('AGENTS.md', join(f.root, 'CLAUDE.md'));
+    }],
+    ['AGENTS.md hard-linked to another file', f => {
+      mkdirSync(join(f.root, 'team'), { recursive: true });
+      writeFileSync(join(f.root, 'team', 'agents.md'), '# Team rules\n\nKeep this line.\n');
+      linkSync(join(f.root, 'team', 'agents.md'), join(f.root, 'AGENTS.md'));
+    }],
+  ];
+  for (const [label, arrange] of layouts) for (const command of ['stack add', 'init']) {
+    const f = fixture(t);
+    arrange(f);
+    const before = ['AGENTS.md', 'CLAUDE.md'].map(file => readFileSync(join(f.root, file), 'utf8'));
+    writeJson(join(f.root, 'api', 'orders.json'), { openapi: '3.0.3', info: { title: 'Orders', version: '1' },
+      paths: { '/orders/{id}': { get: { responses: { '200': { description: 'ok' } } } } } });
+    const args = command === 'init' ? ['init', '--contract', 'api/orders.json'] : ['stack', 'add', 'orders', '--base-url', 'http://127.0.0.1:9/v1', '--json'];
+    const result = await runAny(f, args);
+    assert.equal(result.exit, 0, `${label}, ${command}\n${result.stdout}${result.stderr}`);
+    assert.deepEqual(JSON.parse(result.stdout).pointers, { state: 'unchanged', files: [] }, `${label}, ${command}`);
+    assert.deepEqual(['AGENTS.md', 'CLAUDE.md'].map(file => readFileSync(join(f.root, file), 'utf8')), before, `${label}, ${command}`);
+    const human = command === 'init' ? null : await runAny(f, ['stack', 'add', 'billing', '--base-url', 'http://127.0.0.1:9/v2']);
+    if (human) {
+      assert.equal(human.exit, 0, `${label}\n${human.stdout}${human.stderr}`);
+      assert.doesNotMatch(human.stdout, /not refreshed|Managed instructions/, `${label}\n${human.stdout}`);
+    }
+  }
+});
