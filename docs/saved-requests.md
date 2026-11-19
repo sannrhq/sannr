@@ -127,7 +127,39 @@ values may not. A JSON body can therefore be
 Types are `string`, `number`, `integer`, `boolean`, `object`, `array` and `null`.
 Sensitive inputs are strings; split sensitive structured data into individual
 string fields. They are scrubbed from the engine's evidence, responses and
-usage output, including common encoded reflections. Input objects cannot carry
+usage output. A typed or drafted value of six characters or more is removed
+wherever it appears, including common encoded reflections (JSON-escaped,
+URL-encoded and base64). A shorter one is removed only where it stands as a
+whole value: a whole JSON string or key, a whole header value, a whole URL
+path segment or a whole query value, compared as written, URL-decoded,
+JSON-escaped and base64-encoded, never from inside a longer value. So an id
+such as `1` leaves the host, port and `Date` header of the record intact,
+while a field whose whole value is `1` (a header such as
+`x-ratelimit-remaining: 1`, a body field `"page": "1"`) still reads
+`[redacted]`. An input whose declaration names an environment source is a
+secret by declaration (a short PIN or key), whether its value was read from
+the variable or supplied by the caller and whatever its `sensitive` flag
+says: it is removed wherever it appears, whatever its length, as a configured
+credential is. A PIN of `1` from its variable therefore also rewrites the
+host and `Date` header of the record.
+
+No input value ever alters what the client writes about the request itself:
+the record's provenance (`origin`: times, versions, build and session
+identifiers, digests and scope), `request.method` and `request.authUsed`; and
+in the usage log row, `ts`, `project`, `origin` (the fixed word `own`,
+`vendor` or `other`), `method`, `stack`, `environment`, `status`, `ok`,
+`mode`, `authUsed`, `tokenRefreshed`, `idempotencyKeySent`, `purpose`,
+`target_source`, `laneWidth`, `throttled`, `throttleWaitMs`, `ms`, `rawBytes`,
+`envelopeBytes`, `tokensSaved`, `contractLoaded`, `pagesFetched`, the `drift`
+kinds, `knownOp`, `knownNotes`, `knownProviderHash`, `friction`, `known`,
+`runId` and `session_id`. The row's `path`, `queryKeys` and `host` come from
+the request URL and `rateLimitRemaining` from the API's headers; they, and
+any field not listed here, are scrubbed for inputs. A run record's `drift`
+entries quote what the API returned and are scrubbed like the response.
+Configured credentials are not inputs and keep the full scrub of the whole
+record, short values included. An input whose declaration omits `sensitive`
+(or sets it to `false`) and has no environment source is sent and recorded as
+typed. Input objects cannot carry
 body-file directives or prototype keys.
 Environment sources accept string inputs and are always treated as private,
 even if `sensitive` was omitted. A current authentication variable cannot also

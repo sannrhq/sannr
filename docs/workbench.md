@@ -261,7 +261,19 @@ reuse. Three columns, resized like the Workbench view's.
   or credential values. Building a draft sends nothing. Each field shows where
   it goes (path, query, header or body) and its type. A string is sent as
   typed; any other type is entered as JSON. A field the draft marks sensitive
-  is masked until you choose **Show**. **Send request**, or Enter in a field,
+  is masked until you choose **Show**, and the page says beside the fields
+  that a masked value is also removed from the recorded request and response:
+  a value shorter than six characters only where it is a whole value (a JSON
+  field, a URL path segment, a query value or a header value), never from
+  inside a longer value; a longer value wherever it appears. So with an id of
+  `1` the host, port and `Date` header are kept, but a header or body field
+  whose whole value is `1` still reads `[redacted]`. A field with an
+  environment source (its box reads "From NAME unless entered") is a secret by
+  declaration: its value, entered or read from the variable, is removed
+  wherever it appears at any length, so a PIN of `1` also rewrites the host
+  and `Date` header. A string field is sensitive by default; the page has
+  no control to change that (see [saved requests](saved-requests.md#format-version-1)
+  for the document's `sensitive` flag). **Send request**, or Enter in a field,
   sends the request once through the same client, credentials and production
   policy as the CLI and the MCP tool. A missing value is named and nothing is
   sent. Entered values stay in the tab, so you can adjust one and send again;
