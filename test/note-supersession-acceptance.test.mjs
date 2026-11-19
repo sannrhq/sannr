@@ -367,6 +367,74 @@ test('QA human note evidence labels attachment history explicitly after its priv
   assert.equal(entry(f).notes_provenance[0].evidence[0].state, 'available', 'historical provenance is preserved');
 });
 
+// QA-L4-01: show --human printed every note's evidence after the last note,
+// so a person's evidence-free note appeared to cite the agent's runs.
+function humanNoteBlocks(stdout) {
+  const lines = stdout.split('\n'), blocks = new Map();
+  let current = null;
+  for (const line of lines) {
+    const id = /^ {2}(sha256:[a-f0-9]{64})$/u.exec(line);
+    if (id) { current = id[1]; blocks.set(current, []); continue; }
+    if (/^\S/u.test(line) || /^ {2}\S/u.test(line)) { current = null; continue; }
+    if (current) blocks.get(current).push(line);
+  }
+  return blocks;
+}
+test('QA show --human prints each note\'s evidence under that note and none under a note without evidence', async t => {
+  const f = await httpFixture(t);
+  await success(f, ['init']);
+  await success(f, ['request', 'GET', '/api/user', '--expect-status', '200']);
+  await success(f, ['request', 'GET', '/api/user', '--expect-status', '200']);
+  const runs = localEvidence(f).filter(run => run.data.origin?.initiator === 'cli.request').map(run => run.id);
+  assert.equal(runs.length, 2);
+  await firstNote(f, OLD, ['--evidence', runs[0], '--evidence', runs[1]]);
+  await success(f, ['note', OP, EXTRA, '--alongside']);
+  const saved = entry(f).notes_provenance;
+  assert.deepEqual(saved[0].evidence.map(ref => ref.run_id).sort(), [...runs].sort(), 'the ledger holds both runs on the first note');
+  assert.equal(saved[1].evidence, undefined, 'the alongside note has no evidence in the ledger');
+  const shown = await show(f);
+  const withRuns = record(shown, OLD).id, without = record(shown, EXTRA).id;
+  for (const args of [['show', OP, '--human'], ['show', OP, '--human', '--history']]) {
+    const human = await success(f, args);
+    const blocks = humanNoteBlocks(human.stdout);
+    assert.ok(blocks.has(withRuns) && blocks.has(without), human.stdout);
+    for (const run of runs) {
+      assert.equal(blocks.get(withRuns).filter(line => line.startsWith(`    Evidence ${run}:`)).length, 1, `${run} under its own note\n${human.stdout}`);
+      assert.equal(human.stdout.split(`Evidence ${run}:`).length - 1, 1, `${run} printed once\n${human.stdout}`);
+    }
+    assert.deepEqual(blocks.get(without).filter(line => line.includes('Evidence ')), [], `no evidence under the alongside note\n${human.stdout}`);
+  }
+  const json = await show(f);
+  assert.deepEqual(json, shown, 'JSON output is unchanged by the human rendering');
+});
+
+// A4 item 6: stack facts printed each review line above its fact and never
+// printed a fact's evidence.
+test('QA show --human prints each stack fact\'s review line and evidence under that fact', async t => {
+  const f = await httpFixture(t);
+  await success(f, ['init']);
+  await success(f, ['request', 'GET', '/api/user', '--expect-status', '200']);
+  const run = localEvidence(f).find(item => item.data.origin?.initiator === 'cli.request').id;
+  const FIRST = 'Every response carries a request id header.', SECOND = 'Errors use a stable code field.';
+  await success(f, ['note', '--scope', 'stack', FIRST, '--evidence', run]);
+  await success(f, ['note', '--scope', 'stack', SECOND, '--alongside']);
+  for (const args of [['show', '--stack', 'fixture', '--human'], ['show', OP, '--human']]) {
+    const lines = (await success(f, args)).stdout.split('\n');
+    const block = text => {
+      const start = lines.indexOf(`  ${text}`);
+      assert.ok(start >= 0, `${text}\n${lines.join('\n')}`);
+      const end = lines.findIndex((line, i) => i > start && !line.startsWith('    '));
+      return lines.slice(start + 1, end < 0 ? undefined : end);
+    };
+    const first = block(FIRST), second = block(SECOND);
+    assert.match(first[0], /^ {4}sha256:[a-f0-9]{64}; /u, first.join('\n'));
+    assert.match(first[1], /^ {4}Review data: /u, first.join('\n'));
+    assert.equal(first.filter(line => line.startsWith(`    Evidence ${run}: attachment-time state available;`)).length, 1, first.join('\n'));
+    assert.match(second[1], /^ {4}Review data: /u, second.join('\n'));
+    assert.deepEqual(second.filter(line => line.includes('Evidence ')), [], second.join('\n'));
+  }
+});
+
 test('QA legacy and missing evidence retain unknown/unavailable origin, exact evidence IDs cannot escape the repo', async t => {
   const f = scratch(t), id = 'run-11111111-1111-4111-8111-111111111111';
   writeFileSync(join(f.root, fixtureEvidencePath(), `${id}.json`), JSON.stringify({ request: { method: 'GET', path: '/api/user' }, response: { status: 200 } }));

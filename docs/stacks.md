@@ -123,6 +123,59 @@ format. At most 15 facts per stack and 60 total appear across gotchas and inheri
 lessons; omitted counts name the exact `show --stack` command. `unsorted` reports
 its operation count and the `stack move` command.
 
+`stack add`, `stack import`, `stack move` and `init` (including `init
+--contract` creating the first stack) refresh those blocks as they finish, so
+they list the stacks that now exist: the new block is the one a second
+`connect` would write. Only blocks `connect` already wrote are rewritten, and
+text outside them is left as it was; a repository that never ran `connect`
+gets no agent file. The text output ends with `Managed instructions: written
+(AGENTS.md).` (or `unchanged`); `--json`, and `init`'s JSON, carry the same
+result as `pointers`.
+
+**When the stack change succeeds but the refresh does not.** These four
+commands keep the stack change and exit 1. The refresh stops at the first file
+that fails, and a malformed block in either file stops it before anything is
+written, so the output names each file refreshed, the file that failed with
+its reason, and each file not attempted because of it (`pointers.files`,
+`pointers.failures[]` with `file`, `code`, `reason` and `next`, and
+`pointers.not_attempted`). What to do is the same for all four: fix the named
+file, then run `connect`. Do not repeat the command: after `init --contract`
+created the first stack, repeating it refuses with
+`CONTRACT_SELECTION_CONFLICT`. For `POINTER_CONFLICT` on malformed markers,
+repair them by hand first: the file must hold exactly one
+`<!-- sannr:begin -->` followed by one `<!-- sannr:end -->`; `connect` refuses
+a malformed block the same way until then. For any other conflict the reason
+names the problem (for example a linked file), and the same advice applies.
+
+With more than one stack, `connect`'s closing lines list every stack's
+knowledge file and operation counts and mark the default stack, whether or not
+a stack is selected, and end with a line naming `stacks` and
+`show --stack <name>`. With several stacks and no default, `connect` registers
+the client for the whole repository. With exactly one stack the closing lines
+name that stack alone. In `connect --json` with more than one stack:
+
+- `stacks` (top level) has one row per stack: `stack`, `default: true` for the
+  default stack, `selected: true` for the stack this run planned, `knowledge`
+  (the stack's knowledge file), `state`, `contract` (`bound`, `missing` or
+  `not_bound`), `base_url` (`configured` or `missing`), `operations` and
+  `evidence_classes`. A stack that is not selected has `state` `present` or
+  `missing`. The selected stack's `state` is this run's plan for its knowledge
+  file: `present`, `wrote`, `would write` (with `--dry-run`) or `skipped` (no
+  knowledge file could be planned; the text output gives the reason on the
+  next line).
+- `setup.context.stacks` repeats those rows without `base_url`, and
+  `setup.context.next` holds that closing line, whether or not a stack is
+  selected.
+- With a stack selected, the top-level `context` and the rest of
+  `setup.context` and `setup.api` describe that stack, as they do with one
+  stack.
+- With no stack selected, the top-level `context` is `present`, or
+  `partial — no knowledge file for <names>`; `setup.context.operations`,
+  `verified` and `evidence_classes` are totals across the stacks;
+  `setup.context.state` is `available` when every stack has a knowledge file
+  and `partial` when one does not; `setup.api.source` is `stacks`, and
+  `setup.api.next` names each stack without a base URL and its `stack.json`.
+
 `map` and `view` include a stack index and one viewport per stack. Each uses
 that stack's default environment and the same observation rules as scoped
 `show`; observations and verified executions remain separate. The viewport
@@ -249,7 +302,8 @@ the source and has no replacement there is left alone and listed under
 local contract; a contract that changed in the source is named in the receipt.
 
 After an import, existing managed blocks in `AGENTS.md` and `CLAUDE.md` are
-refreshed as they are after `note`; the receipt reports that result separately.
+refreshed and reported as after `stack add` (see the managed instructions
+above): the receipt's `pointers` and the closing lines name each file.
 The first knowledge write in a repository also creates `.sannr/README.md`,
 `.sannr/.gitignore` and `.sannr/layout.json`; the receipt lists them under
 `layout_files`. A new stack is installed whole or not at all. Its folder is
