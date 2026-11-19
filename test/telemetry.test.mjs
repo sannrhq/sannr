@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { chmodSync, closeSync, cpSync, openSync, existsSync, renameSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir, userInfo } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { HOME_ENV_NAME, MCP_INSPECT_CLIENT_NAME, PRODUCT, TELEMETRY_CHECKOUT_ENV_NAME, TELEMETRY_ENV_NAME, TOOL_NAME, USAGE_URL } from '../lib/brand.mjs';
 import { cliFeatureNames } from '../lib/telemetry.mjs';
@@ -60,11 +60,24 @@ function validate(schema, value, path = '$') {
   return errors;
 }
 
+// Removes a test's directories. On Windows a child that has just ended can still
+// hold one (EBUSY, ENOTEMPTY, EPERM), and Node 22's rmSync gives up at once on a
+// directory that is busy at its first rmdir, whatever maxRetries says. So the wait
+// is here: about five seconds, after which the error fails the test.
+async function removeTree(path) {
+  for (let attempt = 1; ; attempt++) {
+    try { return rmSync(path, { recursive: true, force: true }); } catch (error) {
+      if (attempt === 10 || !['EBUSY', 'ENOTEMPTY', 'EPERM'].includes(error.code)) throw error;
+      await new Promise(done => setTimeout(done, attempt * 100));
+    }
+  }
+}
+
 // --- one isolated machine --------------------------------------------------------
 function machine(t, { project = 'project', stateInHome = false } = {}) {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-')));
   t.after(() => { for (const dir of ['state', 'other-state', 'home']) try { chmodSync(join(parent, dir), 0o700); } catch { /* absent */ }
-    rmSync(parent, { recursive: true, force: true }); });
+    return removeTree(parent); });
   const home = join(parent, 'home'), state = stateInHome ? join(parent, 'home', `.${PRODUCT}`) : join(parent, 'state'), root = join(parent, project);
   mkdirSync(home); mkdirSync(root);
   const calls = join(parent, 'calls.jsonl'), mode = join(parent, 'mode.txt'), clock = join(parent, 'clock.txt'), preload = join(parent, 'preload.mjs');
@@ -414,7 +427,7 @@ test('A17: a source checkout never counts or sends unless a test names the check
 
 test('A17c: a source tree without .git never counts; a packed copy behaves as an installed package', async t => {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-trees-')));
-  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  t.after(() => removeTree(parent));
   // A source copy as a ZIP download or an archive gives it: no .git.
   const source = join(parent, 'source');
   for (const entry of ['bin', 'lib', 'skill', 'stacks', 'server.mjs', 'package.json', 'scripts', 'test'])
@@ -423,11 +436,17 @@ test('A17c: a source tree without .git never counts; a packed copy behaves as an
   // The packed copy npm makes from this tree.
   const packDir = join(parent, 'pack'), packed = join(parent, 'packed');
   mkdirSync(packDir); mkdirSync(packed);
-  const pack = spawn('npm', ['pack', '--ignore-scripts', '--silent', '--pack-destination', packDir], { cwd: ROOT, stdio: 'ignore' });
-  assert.equal(await new Promise(resolve => pack.once('close', resolve)), 0, 'npm pack failed');
-  const tarball = join(packDir, readdirSync(packDir).find(name => name.endsWith('.tgz')));
-  const untar = spawn('tar', ['-xzf', tarball, '-C', packed], { stdio: 'ignore' });
-  assert.equal(await new Promise(resolve => untar.once('close', resolve)), 0);
+  // On Windows `npm` is a command script that cannot be started directly, so
+  // npm's own entry runs under this Node: the one npm set, or the copy beside
+  // node.exe. tar is given relative names: a drive letter reads as a remote
+  // host to GNU tar, which is first on some Windows paths.
+  const npmCli = process.env.npm_execpath || (process.platform === 'win32' ? join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js') : null);
+  const packArgs = ['pack', '--ignore-scripts', '--silent', '--pack-destination', packDir];
+  const pack = npmCli ? spawn(process.execPath, [npmCli, ...packArgs], { cwd: ROOT, stdio: 'ignore' }) : spawn('npm', packArgs, { cwd: ROOT, stdio: 'ignore' });
+  assert.equal(await new Promise(resolve => pack.once('error', () => resolve('not started')).once('close', resolve)), 0, 'npm pack failed');
+  const tarball = readdirSync(packDir).find(name => name.endsWith('.tgz'));
+  const untar = spawn('tar', ['-xzf', tarball, '-C', join('..', 'packed')], { cwd: packDir, stdio: 'ignore' });
+  assert.equal(await new Promise(resolve => untar.once('error', () => resolve('not started')).once('close', resolve)), 0, 'tar failed');
   const packedRoot = join(packed, 'package');
   assert.equal(existsSync(join(packedRoot, 'test')) || existsSync(join(packedRoot, 'scripts', 'test-unit.mjs')) || existsSync(join(packedRoot, '.git')), false,
     'the packed copy contains a source-tree marker');
@@ -684,7 +703,7 @@ test('F11: a broken or abandoned send lock does not stop sending; a live one hol
     else {
       mkdirSync(m.lock);
       const created = kind === 'old' ? START + 25 * 3_600_000 - 10 * 60_000 : START + 30 * 86_400_000;
-      if (kind !== 'empty') writeFileSync(join(m.lock, 'owner.json'), JSON.stringify({ nonce: 'abandoned', created_at: created, pid: 1 }));
+      if (kind !== 'empty') writeFileSync(join(m.lock, 'owner.json'), JSON.stringify({ nonce: 'abandoned', created_at: created, pid: process.pid }));
     }
     assert.match(json(await m.run(['telemetry', 'status', '--json'])).send_lock, /stale/, kind);
     await m.run(['--version']);
@@ -886,7 +905,7 @@ test('A17a: a test run never counts or sends, and a packed copy run as the packa
   // test/package.test.mjs runs its packed copy: the test process's own
   // environment, which carries the test runner's mark, and only HOME moved.
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-packed-')));
-  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  t.after(() => removeTree(parent));
   const copy = join(parent, 'package'), home = join(parent, 'home');
   mkdirSync(home);
   for (const entry of ['bin', 'lib', 'skill', 'stacks', 'server.mjs', 'package.json', 'docs'])
@@ -1159,7 +1178,7 @@ test('F6: on and reset name an unwritable directory, not a send in progress', as
 
 test('A17b: the packed copy run with plain node and an exported SANNR_HOME leaves no telemetry state and sends nothing', async t => {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-canary-')));
-  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  t.after(() => removeTree(parent));
   const canary = join(parent, 'home'), state = join(canary, 'state-home'), calls = join(parent, 'calls.jsonl'), preload = join(parent, 'preload.mjs');
   mkdirSync(state, { recursive: true });
   writeFileSync(preload, `import { appendFileSync } from 'node:fs';
@@ -1324,8 +1343,10 @@ function telemetryFiles(root) {
 // start a test child with no HOME at all.
 function runUnset(m, unset, args, env = {}) {
   const started = performance.now();
-  const child = spawn('/usr/bin/env', [...unset.flatMap(name => ['-u', name]), process.execPath, CLI, ...args],
-    { cwd: m.root, env: { ...m.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  // With nothing to remove the CLI starts directly; Windows has no env command
+  // and its variants (empty and relative) remove nothing.
+  const [command, argv] = unset.length ? ['/usr/bin/env', [...unset.flatMap(name => ['-u', name]), process.execPath, CLI, ...args]] : [process.execPath, [CLI, ...args]];
+  const child = spawn(command, argv, { cwd: m.root, env: { ...m.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '', stderr = '';
   child.stdout.on('data', chunk => stdout += chunk);
   child.stderr.on('data', chunk => stderr += chunk);
@@ -1554,7 +1575,7 @@ test('F8: off racing on across three directories ends as one of them says, and n
 
 test('F6: each source-tree marker alone, and a marker path that cannot be read, make a source tree', async t => {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-markers-')));
-  t.after(() => { try { chmodSync(join(parent, 'tree', 'scripts'), 0o700); } catch { /* absent */ } rmSync(parent, { recursive: true, force: true }); });
+  t.after(() => { try { chmodSync(join(parent, 'tree', 'scripts'), 0o700); } catch { /* absent */ } return removeTree(parent); });
   const tree = join(parent, 'tree');
   for (const entry of ['bin', 'lib', 'skill', 'stacks', 'server.mjs', 'package.json']) cpSync(join(ROOT, entry), join(tree, entry), { recursive: true });
   // Written out, not imported, so a marker dropped from the code fails.
@@ -1596,7 +1617,7 @@ test('F6: each source-tree marker alone, and a marker path that cannot be read, 
 // no source-tree marker, so they count as an installed copy.
 function installedCopy(t) {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'telemetry-inspect-')));
-  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  t.after(() => removeTree(parent));
   const copy = join(parent, 'package');
   for (const entry of ['bin', 'lib', 'skill', 'stacks', 'server.mjs', 'package.json']) cpSync(join(ROOT, entry), join(copy, entry), { recursive: true });
   return { cli: join(copy, 'bin', 'cli.mjs'), server: join(copy, 'server.mjs') };

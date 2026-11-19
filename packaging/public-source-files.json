@@ -2,6 +2,7 @@
   "schema_version": 2,
   "rule": "Explicit product source-path inventory. Research is excluded only by the reviewed directories and exact files below; unknown paths fail staging. Inclusion is not a secret scan.",
   "files": [
+    ".gitattributes",
     ".github/CODEOWNERS",
     ".github/ISSUE_TEMPLATE/bug.yml",
     ".github/ISSUE_TEMPLATE/config.yml",
