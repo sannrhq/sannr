@@ -500,10 +500,12 @@ test('an input value never alters the usage row\'s client-written fields; the ro
     path: '/v1/orders/Q7/quote', queryKeys: ['ref'], status: 200, ok: true, mode: 'passthrough', authUsed: 'bearer:ORDERS_TOKEN',
     environment: 'local', drift: ['pagination-loop'], knownOp: 'GET /orders/{orderId}/quote', friction: 'retry', runId: 'run-1', session_id: 'sess-1' };
   for (const input of ['GET', 'bearer', 'fixture', 'local', 'repo-1', 'retry', 'ORDERS_TOKEN', 'pagination-loop']) {
+    // None of these occurs in knownOp except as part of a longer value.
     const out = scrubWith([input, 'Q7'], row, [], 'usage');
     assert.deepEqual({ ...out, path: row.path }, row, input);
     assert.equal(out.path, `/v1/orders/${R}/quote`, input);
   }
+  assert.equal(scrubWith(['orders'], row, [], 'usage').knownOp, `GET /${R}/{orderId}/quote`);
   const credential = scrubWith(['GET'], row, ['GET', 'fixture', 'bearer'], 'usage');
   assert.equal(credential.method, R);
   assert.equal(credential.stack, R);
@@ -534,8 +536,10 @@ test('an environment-declared input scrubs everywhere except the fields the clie
   assert.equal(scrubWithEnvironment(['GET'], record, 'httpEvidence').request.url, `http://127.0.0.1:4731/v1/${R}/x`);
   const row = { origin: 'own', method: 'GET', authUsed: 'bearer:ORDERS_TOKEN', knownOp: 'GET /orders/{orderId}/quote', path: '/v1/own/GET' };
   const out = scrubWithEnvironment(['GET', 'own', 'bearer'], row, 'usage');
-  assert.deepEqual({ ...out, path: row.path }, row);
+  assert.deepEqual({ ...out, path: row.path, knownOp: row.knownOp }, row);
   assert.equal(out.path, `/v1/${R}/${R}`);
+  // knownOp can be the concrete request path, so it is scrubbed like the path.
+  assert.equal(out.knownOp, `${R} /orders/{orderId}/quote`);
 });
 
 test('an input read from an environment variable keeps the full scrub at any length; the same value typed is removed only whole', async t => {
@@ -578,14 +582,18 @@ test('an input whose declaration names an environment source keeps the full scru
   }
 });
 
-test('the usage row\'s knownOp is the operation as the client matched it, through a real run', async t => {
+test('the usage row\'s knownOp is scrubbed for inputs like the path, through a real run', async t => {
   const f = await scrubFixture(t);
   const rows = () => readFileSync(f.env.API_USAGE_LOG, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  // Accepted by ruling: a typed value equal to a word of the template alters it.
   const typed = await scrubRun(f, { orderId: 'Q7', ref: 'M', size: 'orders', note: 'private-note-4412' });
-  assert.equal(rows().find(r => r.runId === typed.evidence).knownOp, 'GET /orders/{orderId}/quote');
+  assert.equal(rows().find(r => r.runId === typed.evidence).knownOp, `GET /${R}/{orderId}/quote`);
   const fromEnv = await scrubRun(f, { size: 'M' }, { ref: f.labelRef, env: { FIXTURE_PIN: 'POST' } });
   assert.equal(fromEnv.status, 200);
-  assert.equal(rows().find(r => r.runId === fromEnv.evidence).knownOp, 'POST /labels');
+  assert.equal(rows().find(r => r.runId === fromEnv.evidence).knownOp, `${R} /labels`);
+  // A short typed value that only stands inside the template leaves it.
+  const short = await scrubRun(f, { orderId: 'Q8', ref: 'M', size: 'GET', note: 'private-note-4412' });
+  assert.equal(rows().find(r => r.runId === short.evidence).knownOp, 'GET /orders/{orderId}/quote');
 });
 
 test('the usage row\'s origin is a fixed word the client writes; a typed value equal to it leaves it', async t => {
