@@ -13,9 +13,11 @@ import { saveSavedRequest, showSavedRequest, listSavedRequests, renameSavedReque
 import { readSavedRequestInputFile, resolveSavedRequestInputs } from '../lib/saved-request-inputs.mjs';
 import { savedRequestAction, savedActionFailure } from '../lib/saved-request-actions.mjs';
 import { inspectRecordedResponse } from '../lib/response-inspection.mjs';
-import { scrubForTest } from '../lib/client.mjs';
+import * as client from '../lib/client.mjs';
 import { withPrivateRequestInputs } from '../lib/request-private-inputs.mjs';
+import { detectFriction, frictionPrompt } from '../lib/friction.mjs';
 
+const { scrubForTest } = client;
 const moduleUrl = new URL('../lib/saved-requests.mjs', import.meta.url).href;
 const write = (file, value) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify(value)); };
 const document = () => ({ kind: 'saved-request', format_version: 1, folder: 'orders', name: 'lookup', stack: 'fixture', environment: 'local',
@@ -706,6 +708,46 @@ test('a short private input is not removed from dates, hosts, ports, words or te
   assert.equal(out.request.url, `http://127.0.0.1:4731/bot/${R}/getMe`);
 });
 
+// Text an API returns is read for paths with trailing punctuation set aside.
+// A short value whose own last character is one of those marks still counts
+// where it fills the last segment or the last query value; the same value
+// without the mark is a different value, and the mark stays in the text.
+for (const mark of ['.', ',', ';', ':', '!', "'", ')', ']', '}']) {
+  test(`a short value ending in ${mark} is removed from the end of a path inside a longer string`, () => {
+    const value = `Yd${mark}`, text = (inputs, s) => withPrivateRequestInputs(inputs, () => scrubForTest(s, []));
+    assert.equal(text([value], `Cannot GET /bot/${value}`), `Cannot GET /bot/${R}`);
+    assert.equal(text([value], `Cannot GET /bot/${value}. Retry later.`), `Cannot GET /bot/${R}. Retry later.`);
+    assert.equal(text([value], `see http://127.0.0.1:47980/orders?page=2&id=${value}`), `see http://127.0.0.1:47980/orders?page=2&id=${R}`);
+    assert.deepEqual(scrubWith([value], { message: `Redirect returned to /v1/loop/${value}, which was already visited.` }),
+      { message: `Redirect returned to /v1/loop/${R}, which was already visited.` });
+    assert.equal(text(['Yd'], `Cannot GET /bot/Yd${mark}`), `Cannot GET /bot/${R}${mark}`);
+  });
+}
+
+// The strings the client builds around the concrete request path (the
+// operation name with no bound contract, the friction prompt's suggested note
+// command, the redirect-loop note) carry [redacted] from the moment they are
+// built. No scrub runs here, so the token scan cannot be what removes it.
+test('the operation name, the suggested note command and the redirect note are built with a short typed path value removed', () => {
+  const built = client.pathStringsForTest;
+  assert.ok(built, 'the client exposes the strings as it builds them');
+  for (const value of ['Yd.', 'Yp)', "Ya'", 'Yb!', 'Q7', 'Zq7kW']) withPrivateRequestInputs([value], () => {
+    const segment = encodeURIComponent(value);
+    assert.equal(built.operationName('GET', `/bot/${segment}`), `GET /bot/${R}`, value);
+    assert.equal(built.operationName('GET', `/bot/${segment}/getMe`), `GET /bot/${R}/getMe`, value);
+    const note = built.redirectLoopNote(`/v1/loop/${segment}`);
+    assert.ok(note.includes(`/v1/loop/${R}`) && !note.includes(`/loop/${segment}`), `${value}: ${note}`);
+    // The detector compares the concrete path with the usage log; the prompt names the operation without the value.
+    const request = built.frictionRequest(new URL(`http://127.0.0.1:4731/v1/bot/${segment}`), 'GET', 200), now = Date.now();
+    const rows = [400, 400].map((status, i) => ({ ts: new Date(now - 2000 + i * 1000).toISOString(), host: '127.0.0.1', method: 'GET', path: `/v1/bot/${segment}`, status }));
+    const prompt = frictionPrompt(detectFriction(request, { rows, now }));
+    for (const field of ['op', 'note', 'write_it'])
+      assert.ok(prompt[field].includes(`GET /v1/bot/${R}`) && !prompt[field].includes(`/bot/${segment}`), `${value} ${field}: ${prompt[field]}`);
+  });
+  // Outside a saved request's private inputs the strings name the path as it is.
+  assert.equal(built.operationName('GET', '/bot/Yd.'), 'GET /bot/Yd.');
+});
+
 // A response string that ends in many closing brackets is read in linear
 // time. The scrub runs in a child process that is stopped after a few seconds,
 // so a slow scan fails the test instead of stalling it.
@@ -722,6 +764,44 @@ test('a short private input scrub stays fast on a path token ending in many clos
   assert.equal(out.path, `/bot/${R}/getMe`);
   assert.equal(out.parens, leaves.parens);
   assert.equal(out.mixed, leaves.mixed);
+});
+
+// Malformed percent escapes, in text and as one whole path or query, cost
+// about what a realistic answer of the same size does to scrub (a JSON
+// listing with URL fields, an HTML page of links), measured in one child
+// process with the same short input in scope. Each was once 15 to 50 times
+// the realistic answer. The best of three rounds is compared, so load on the
+// machine slows both sides alike; the child is stopped only if it hangs.
+test('answers full of malformed percent escapes cost about what a realistic answer of the same size does to scrub', t => {
+  const urls = { client: new URL('../lib/client.mjs', import.meta.url).href, inputs: new URL('../lib/request-private-inputs.mjs', import.meta.url).href };
+  const script = `const { scrubForTest } = await import(${JSON.stringify(urls.client)});
+    const { withPrivateRequestInputs } = await import(${JSON.stringify(urls.inputs)});
+    const size = 2e6, fill = unit => unit.repeat(Math.floor(size / unit.length));
+    const items = []; for (let i = 0, n = 0; n < size; i++) { const item = { id: i, url: 'https://api.example.test/repos/o/r/issues/' + i,
+      comments_url: 'https://api.example.test/repos/o/r/issues/' + i + '/comments', body: 'See /docs/errors/' + (i % 9) + ' and (https://example.test/o/r/pull/' + i + ').' };
+      items.push(item); n += JSON.stringify(item).length; }
+    const realistic = { listing: JSON.stringify(items), page: fill('<li><a href="/docs/7/page">/docs/7/page</a> see (/x/7/y), "/q?id=7".</li>\\n') };
+    const malformed = { text: fill(' /%'), path: fill('/%'), queries: fill(' /a?b=%'), query: '/a?' + fill('b=%&') };
+    const bodies = { ...realistic, ...Object.fromEntries(Object.entries(malformed).map(([key, leaf]) => [key, JSON.stringify({ leaf })])) };
+    const best = {}, kept = {};
+    for (let round = 0; round < 3; round++) for (const [key, body] of Object.entries(bodies)) {
+      const started = process.hrtime.bigint();
+      const out = withPrivateRequestInputs(['7'], () => scrubForTest(body, [], 'httpEvidence'));
+      best[key] = Math.min(best[key] ?? Infinity, Number(process.hrtime.bigint() - started) / 1e6);
+      if (key in malformed) kept[key] = JSON.parse(out).leaf === malformed[key] ? 'unchanged' : 'changed';
+    }
+    kept.sentinel = withPrivateRequestInputs(['7'], () => scrubForTest('Cannot GET /bot/7/getMe', []));
+    process.stdout.write(JSON.stringify({ best, kept }));`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', timeout: 180_000 });
+  assert.equal(child.signal, null, 'the child did not finish within three minutes');
+  assert.equal(child.status, 0, child.stderr);
+  const { best, kept } = JSON.parse(child.stdout);
+  assert.deepEqual(kept, { text: 'unchanged', path: 'unchanged', queries: 'unchanged', query: 'unchanged', sentinel: `Cannot GET /bot/${R}/getMe` });
+  const realistic = Math.max(best.listing, best.page);
+  const ratios = Object.fromEntries(['text', 'path', 'queries', 'query'].map(key => [key, Math.round(best[key] / realistic * 100) / 100]));
+  t.diagnostic(`best of three, ms: ${JSON.stringify(Object.fromEntries(Object.entries(best).map(([key, ms]) => [key, Math.round(ms)])))}; ratio to the slower realistic answer: ${JSON.stringify(ratios)}`);
+  const [worst, ratio] = Object.entries(ratios).sort((a, b) => b[1] - a[1])[0];
+  assert.ok(ratio <= 8, `the costliest shape (${worst}) takes ${ratio} times as long as a realistic answer of the same size`);
 });
 
 // On a stack with no bound contract the operation the client names is the
@@ -746,9 +826,14 @@ test('on a stack with no contract, a short typed path value is removed from the 
     environment: JSON.parse(readFileSync(join(root, LAYOUT.collection, 'nocon', 'stack.json'), 'utf8')).default_environment,
     request: { method: 'GET', path: '/bot/{token}/getMe', bindings: { path: { token: { $input: 'token' } } } },
     inputs: { token: { type: 'string', sensitive: true } }, credentials: [] });
+  // The same value as the last segment of the path, where a value's own last character once mattered.
+  const last = saveSavedRequest(root, { kind: 'saved-request', format_version: 1, folder: 'nocon', name: 'bot', stack: 'nocon',
+    environment: JSON.parse(readFileSync(join(root, LAYOUT.collection, 'nocon', 'stack.json'), 'utf8')).default_environment,
+    request: { method: 'GET', path: '/bot/{token}', bindings: { path: { token: { $input: 'token' } } } },
+    inputs: { token: { type: 'string', sensitive: true } }, credentials: [] });
   writeFileSync(join(root, LAYOUT.requests, 'nocon', 'damaged.json'), '{ not json');
-  const run = token => new Promise((resolve, reject) => {
-    const script = `const api=await import(${JSON.stringify(moduleUrl)}); console.log(JSON.stringify(await api.runSavedRequest(process.cwd(), ${JSON.stringify(saved.ref)}, { inputs: { token: ${JSON.stringify(token)} }, initiator: 'cli.saved' })));`;
+  const run = (token, ref = saved.ref) => new Promise((resolve, reject) => {
+    const script = `const api=await import(${JSON.stringify(moduleUrl)}); console.log(JSON.stringify(await api.runSavedRequest(process.cwd(), ${JSON.stringify(ref)}, { inputs: { token: ${JSON.stringify(token)} }, initiator: 'cli.saved' })));`;
     const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = ''; child.stdout.on('data', c => stdout += c); child.stderr.on('data', c => stderr += c);
     const timer = setTimeout(() => child.kill(), 60_000);
@@ -757,31 +842,76 @@ test('on a stack with no contract, a short typed path value is removed from the 
   const files = () => { const out = [];
     const walk = dir => { for (const entry of existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []) { const path = join(dir, entry.name); if (entry.isDirectory()) walk(path); else if (entry.isFile()) out.push(path); } };
     walk(state); walk(home); walk(join(root, '.sannr')); return out; };
-  const op = `GET /bot/${R}/getMe`;
-  // Five characters, and one character (an order id typed in the Request view).
-  for (const [token, shown] of [['Zq7kW', 'Zq7kW'], ['7', '/bot/7/']]) {
-    const child = await run(token);
+  const op = `GET /bot/${R}/getMe`, lastOp = `GET /bot/${R}`;
+  // Five characters, one character (an order id typed in the Request view),
+  // and values ending in "." and ")" as the last segment.
+  for (const [token, shown, ref, path, expected] of [['Zq7kW', 'Zq7kW', saved.ref, '/bot/Zq7kW/getMe', op], ['7', '/bot/7/', saved.ref, '/bot/7/getMe', op],
+    ['Yd.', 'Yd.', last.ref, '/bot/Yd.', lastOp], ['Yp)', 'Yp)', last.ref, '/bot/Yp)', lastOp]]) {
+    const child = await run(token, ref);
     assert.equal(child.status, 0, child.stderr);
     const result = JSON.parse(child.stdout);
     assert.equal(result.status, 200, child.stdout);
-    assert.equal(seen.at(-1), `/v1/bot/${token}/getMe`);
-    assert.equal(result.known?.op, op, token);
+    assert.equal(seen.at(-1), `/v1${path}`);
+    assert.equal(result.known?.op, expected, token);
     assert.ok(!child.stdout.includes(shown), `the returned envelope shows ${token}`);
     const usage = files().find(file => file.endsWith('usage.jsonl'));
     assert.ok(usage, 'the usage log was written');
     const row = readFileSync(usage, 'utf8').trim().split('\n').map(line => JSON.parse(line)).find(r => r.runId === result.evidence);
-    assert.equal(row.knownOp, op, token);
+    assert.equal(row.knownOp, expected, token);
     assert.ok(row.knownNotes > 0, 'a stack fact was delivered on the row');
     for (const file of files()) assert.ok(!readFileSync(file, 'utf8').includes(shown), `${file} shows ${token}`);
   }
   const machine = cli(['receipt', '--json']), human = cli(['receipt']);
   assert.equal(machine.status, 0, machine.stderr);
-  assert.deepEqual(JSON.parse(machine.stdout).gotchas.operations.map(o => [o.op, o.requests]), [[op, 2]]);
+  assert.deepEqual(JSON.parse(machine.stdout).gotchas.operations.map(o => [o.op, o.requests]).sort(), [[lastOp, 2], [op, 2]]);
   assert.equal(human.status, 0, human.stderr);
   const view = cli(['view']);
   assert.equal(view.status, 0, view.stderr);
   const page = readFileSync(join(root, LAYOUT.evidence, 'view', 'index.html'), 'utf8');
-  assert.ok(page.includes(op), 'the view page names the operation');
+  assert.ok(page.includes(op) && page.includes(`${lastOp}:`), 'the view page names the operations');
   for (const output of [machine.stdout, human.stdout, human.stderr, view.stdout, view.stderr, page])
-    for (const shown of ['Zq7kW', '/bot/7/']) assert.ok(!output.includes(shown), `${shown} is shown`);
+    for (const shown of ['Zq7kW', '/bot/7/', 'Yd.', 'Yp)']) assert.ok(!output.includes(shown), `${shown} is shown`);
+});
+
+// A short typed value equal to a tag name leaves an HTML page as the API sent
+// it: a markup closing tag is not read as a path. A relative Link value has a
+// second "/" or a "?" (or a segment no tag name has) and is still read.
+test('a short typed value equal to a tag name leaves markup closing tags in a stored and returned page', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'markup-short-')), seen = [];
+  const page = '<ul><li><a href="/docs/start">Start</a></li></ul><p>Signed in.</p><b>ok</b >\n';
+  const server = createServer((req, res) => { seen.push(req.url); res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(page); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await new Promise(resolve => server.close(resolve)); rmSync(root, { recursive: true, force: true }); });
+  execFileSync('git', ['init', '--quiet'], { cwd: root });
+  const home = join(root, 'home'), state = join(root, 'machine');
+  mkdirSync(home, { recursive: true });
+  const env = { PATH: process.env.PATH, HOME: home, [HOME_ENV_NAME]: state, API_CONTEXT_DIR: root, API_BUDGET: '6000', API_FRICTION_OFF: '1', NO_COLOR: '1' };
+  const added = spawnSync(process.execPath, [new URL('../bin/cli.mjs', import.meta.url).pathname, 'stack', 'add', 'pages', '--base-url', `http://127.0.0.1:${server.address().port}/v1`], { cwd: root, env, encoding: 'utf8', timeout: 60_000 });
+  assert.equal(added.status, 0, added.stderr + added.stdout);
+  const saved = saveSavedRequest(root, { kind: 'saved-request', format_version: 1, folder: 'pages', name: 'page', stack: 'pages',
+    environment: JSON.parse(readFileSync(join(root, LAYOUT.collection, 'pages', 'stack.json'), 'utf8')).default_environment,
+    request: { method: 'GET', path: '/html/{token}', bindings: { path: { token: { $input: 'token' } } } },
+    inputs: { token: { type: 'string', sensitive: true } }, credentials: [] });
+  for (const token of ['p', 'li', 'b']) {
+    const script = `const api=await import(${JSON.stringify(moduleUrl)}); console.log(JSON.stringify(await api.runSavedRequest(process.cwd(), ${JSON.stringify(saved.ref)}, { inputs: { token: ${JSON.stringify(token)} }, initiator: 'cli.saved' })));`;
+    const child = await new Promise((resolve, reject) => {
+      const proc = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '', stderr = ''; proc.stdout.on('data', c => stdout += c); proc.stderr.on('data', c => stderr += c);
+      const timer = setTimeout(() => proc.kill(), 60_000);
+      proc.once('error', reject); proc.once('close', status => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+    });
+    assert.equal(child.status, 0, child.stderr);
+    const result = JSON.parse(child.stdout);
+    assert.equal(result.status, 200, child.stdout);
+    assert.equal(seen.at(-1), `/v1/html/${token}`);
+    const record = JSON.parse(readFileSync(join(root, LAYOUT.evidence, 'pages', `${result.evidence}.json`), 'utf8'));
+    assert.equal(record.response.body, page, `the stored page with ${token}`);
+    assert.equal(result.data, page, `the returned page with ${token}`);
+    assert.equal(record.request.url, `http://127.0.0.1:${server.address().port}/v1/html/${R}`);
+  }
+  const text = (value, s) => withPrivateRequestInputs([value], () => scrubForTest(s, []));
+  assert.equal(text('li', '<li>a</li\n>'), '<li>a</li\n>');
+  assert.equal(text('2', '</v1/items?page=2>; rel="next"'), `</v1/items?page=${R}>; rel="next"`);
+  assert.equal(text('7', '</7>; rel="next"'), `</${R}>; rel="next"`);
+  assert.equal(text('next', '</prev>; rel="prev", </next> ; rel="next"'), `</prev>; rel="prev", </${R}> ; rel="next"`);
 });

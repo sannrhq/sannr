@@ -132,16 +132,39 @@ wherever it appears, including common encoded reflections (JSON-escaped,
 URL-encoded and base64). A shorter one is removed only where it stands as a
 whole value: a whole JSON string or key, a whole header value, a whole URL
 path segment or a whole query value, compared as written, URL-decoded,
-JSON-escaped and base64-encoded, never from inside a longer word. A path
-segment or query value counts whether the URL or absolute path is the whole
-string or sits inside a longer one, such as an operation name
-(`GET /bot/7/getMe` reads `GET /bot/[redacted]/getMe`), a receipt line or a
-message; the scheme, host, port and the rest of that string are kept. One
-case is not covered: inside a longer string, a value that ends in `.`, `!`,
-`'` or `)` and fills the last segment of the path (`GET /bot/Yd.`) is kept
-there, because that last character is read as punctuation after the path; the
-record's own request path still reads `[redacted]`. So an id
-such as `1` leaves the host, port and `Date` header of the record intact,
+JSON-escaped and base64-encoded, never from inside a longer word. The
+strings the client builds around the concrete request path are built with
+the value already removed: the operation name on a stack with no bound
+contract (`GET /bot/7/getMe` reads `GET /bot/[redacted]/getMe` in the usage
+log, the result, `receipt` and the `view` page), the suggested `note` command
+after a run of failures, and the note on a redirect that returns to a visited
+path. Each path segment is compared whole with the value, so a value's last
+character never matters (`Yd.` gives `GET /bot/[redacted]`).
+
+Text the API returns is also read for a URL or absolute path inside a longer
+string, such as `Cannot GET /bot/7/getMe` or a link in a message: a path
+segment or query value equal to the value reads `[redacted]`, and the scheme,
+host, port and the rest of the string are kept. Such a path starts at the
+start of the string or after whitespace, an ASCII quote or an opening bracket,
+begins with `http://`, `https://` or a single `/`, and ends at whitespace or
+at `"`, `<`, `>` or a backquote. Punctuation after it (`.`, `,`, `;`, `:`, `!`,
+`'`, or a closing bracket it does not open) is not part of its last segment
+or query value unless the value itself ends with that punctuation: with `Yd`
+typed, `GET /bot/Yd.` reads `GET /bot/[redacted].`; with `Yd.` typed, it
+reads `GET /bot/[redacted]`. A markup closing tag such as `</p>` is not read
+as a path, so a value `p` leaves an HTML page as it was sent; a relative
+link such as `</v1/items?page=2>` or `</next>; rel="next"` is. A
+one-segment link is told from a closing tag only by what follows it:
+followed by `;` and its parameters it is read as a path, so a closing tag
+followed by `;` (`<b>Note</b>; see`, with value `b`) is rewritten; with
+nothing or a comma after it (`Link: </Yd>`) it reads exactly like a closing
+tag, and a value `Yd` in it is kept. Inside a longer string, a path is not
+read, and a short value in it is kept, after `=` or `:` with no space
+(`url=/bot/7`), after `//` with no scheme (`//host/bot/7`), with an
+uppercase scheme (`HTTP://host/bot/7`), inside typographic quotes
+(`“/bot/7”`), or when it is relative (`v1/bot/7/getMe`).
+So an id such as `1` leaves the host, port and `Date` header of the record
+intact,
 while a field whose whole value is `1` (a header such as
 `x-ratelimit-remaining: 1`, a body field `"page": "1"`) still reads
 `[redacted]`. A typed value under six characters that the API returns inside
