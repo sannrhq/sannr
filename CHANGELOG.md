@@ -16,9 +16,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   wherever its characters appeared, which rewrote the host, port, `Date`
   header and the record's own timestamp, version and identifiers. It is now
   removed only where it stands as a whole value: a JSON string or key, a
-  header value, or a URL path segment or query value, also where the URL or
-  path sits inside a longer string such as an operation name or a message.
-  Longer inputs, inputs
+  header value, or a URL path segment or query value. The operation name on
+  a stack with no contract, the suggested `note` command and the
+  redirect-loop note are built with the value already removed, whatever its
+  last character. Text the API returns is also read for a URL or path inside
+  a longer string, counting a value's own trailing punctuation and leaving
+  markup closing tags such as `</p>` as sent. Longer inputs, inputs
   declared with an environment source (however their value is supplied, and
   whether or not they are marked sensitive) and configured credentials are
   removed wherever they appear. No input value alters what the client writes
