@@ -153,11 +153,16 @@ or query value unless the value itself ends with that punctuation: with `Yd`
 typed, `GET /bot/Yd.` reads `GET /bot/[redacted].`; with `Yd.` typed, it
 reads `GET /bot/[redacted]`. A markup closing tag such as `</p>` is not read
 as a path, so a value `p` leaves an HTML page as it was sent; a relative
-link such as `</v1/items?page=2>` or `</next>; rel="next"` is. Inside a
-longer string, a path is not read, and a short value in it is kept, after
-`=` or `:` with no space (`url=/bot/7`), after `//` with no scheme
-(`//host/bot/7`), with an uppercase scheme (`HTTP://host/bot/7`), inside
-typographic quotes (`“/bot/7”`), or when it is relative (`v1/bot/7/getMe`).
+link such as `</v1/items?page=2>` or `</next>; rel="next"` is. A
+one-segment link is told from a closing tag only by what follows it:
+followed by `;` and its parameters it is read as a path, so a closing tag
+followed by `;` (`<b>Note</b>; see`, with value `b`) is rewritten; with
+nothing or a comma after it (`Link: </Yd>`) it reads exactly like a closing
+tag, and a value `Yd` in it is kept. Inside a longer string, a path is not
+read, and a short value in it is kept, after `=` or `:` with no space
+(`url=/bot/7`), after `//` with no scheme (`//host/bot/7`), with an
+uppercase scheme (`HTTP://host/bot/7`), inside typographic quotes
+(`“/bot/7”`), or when it is relative (`v1/bot/7/getMe`).
 So an id such as `1` leaves the host, port and `Date` header of the record
 intact,
 while a field whose whole value is `1` (a header such as
