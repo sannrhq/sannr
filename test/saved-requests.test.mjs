@@ -897,4 +897,5 @@ test('a short typed value equal to a tag name leaves markup closing tags in a st
   assert.equal(text('li', '<li>a</li\n>'), '<li>a</li\n>');
   assert.equal(text('2', '</v1/items?page=2>; rel="next"'), `</v1/items?page=${R}>; rel="next"`);
   assert.equal(text('7', '</7>; rel="next"'), `</${R}>; rel="next"`);
+  assert.equal(text('next', '</prev>; rel="prev", </next> ; rel="next"'), `</prev>; rel="prev", </${R}> ; rel="next"`);
 });

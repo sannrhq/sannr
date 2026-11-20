@@ -153,7 +153,7 @@ or query value unless the value itself ends with that punctuation: with `Yd`
 typed, `GET /bot/Yd.` reads `GET /bot/[redacted].`; with `Yd.` typed, it
 reads `GET /bot/[redacted]`. A markup closing tag such as `</p>` is not read
 as a path, so a value `p` leaves an HTML page as it was sent; a relative
-link such as `</v1/items?page=2>` is. Inside a longer string, a path is not
+link such as `</v1/items?page=2>` or `</next>; rel="next"` is. Inside a longer string, a path is not
 read, and a short value in it is kept, after `=` or `:` with no space
 (`url=/bot/7`), after `//` with no scheme (`//host/bot/7`), with an
 uppercase scheme (`HTTP://host/bot/7`), inside typographic quotes
