@@ -10,6 +10,65 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
 
 ## [Unreleased]
 
+- A sensitive saved-request input no longer corrupts the stored record. A
+  value shorter than six characters (an order id `1` typed in the Workbench's
+  Request view, or passed to `saved run` or `api_saved_requests`) was removed
+  wherever its characters appeared, which rewrote the host, port, `Date`
+  header and the record's own timestamp, version and identifiers. It is now
+  removed only where it stands as a whole value: a JSON string or key, a
+  header value, or a URL path segment or query value, also where the URL or
+  path sits inside a longer string such as an operation name or a message.
+  Longer inputs, inputs
+  declared with an environment source (however their value is supplied, and
+  whether or not they are marked sensitive) and configured credentials are
+  removed wherever they appear. No input value alters what the client writes
+  about the request itself: a run record's provenance, method and credential
+  reference, or the usage log row's own fields. The Request view says what
+  masking removes.
+- `api_request` refuses an `expect` that is not an array before sending
+  anything; it used to send the request and report `ok: true` with no
+  assertions. A single HTTP request refuses with `EXPECT_NOT_ARRAY`, a single
+  protocol request with `PROTOCOL_INPUT_INVALID`. A batch is checked whole
+  before its first step, protocol steps included, and refuses with
+  `EXPECT_NOT_ARRAY` and `attempted: 0`. A missing `expect`, `null` and `[]`
+  still mean no assertions.
+- A request made while its configured credential variable is unset says so.
+  The envelope carries `auth_missing` (`AUTH_ENV_MISSING`, the variable names
+  and where the reference was configured): `sent_without_credentials: true`
+  when a response came back, `attempted_without_credentials: true` when the
+  network attempt got none. A request the client rejects before any network
+  attempt carries no notice. It also appears on batch step results, on
+  `suite run --json` and `verify --json` steps and in `learn`'s report, and
+  the CLI prints one warning line per variable per command on standard error.
+  What is sent, `ok` and exit codes are unchanged.
+- `rate_limit` no longer includes `concurrency`. That was the client's own
+  lane width, not something the server said.
+- With `fields` and a passing `expect`, `data` is what the call returns
+  without `expect`, for every kind of response; it used to be `null`.
+- `show --human` prints each note's evidence under that note, and each stack
+  fact's review line and evidence under that fact. JSON output is unchanged.
+- `stack add`, `stack import`, `stack move` and `init` refresh the instruction
+  blocks `connect` already wrote in `AGENTS.md` and `CLAUDE.md` to what
+  `connect` would write, so an agent's instructions list the stacks that
+  exist. Text outside the block is untouched, and a repository that never ran
+  `connect` gets no agent file. If the refresh fails, the stack change is kept
+  and the command exits 1, naming each file refreshed, the file that failed
+  with its reason and each file not attempted; the advice is to fix the named
+  file, or repair a malformed block's markers, then run `connect`.
+- With more than one stack, `connect`'s closing lines list every stack and
+  mark the default, instead of reporting a missing legacy file and "notes are
+  not ready". `connect --json` adds `stacks` and `setup.context.stacks` and
+  keeps every existing field.
+- `telemetry on` no longer records the usage notice when its output cannot be
+  read (the null device, or a failed write). The setting still turns on;
+  nothing is counted until the next command that can show the notice prints
+  it, and the 24 hours start then. The MCP server no longer records the
+  notice when its standard output is the null device, and the notice on
+  standard error is recorded only once all of it was written. A home turned
+  off before it was ever shown the notice, then turned on from another state
+  directory, is shown the notice by its next command.
+- The install prompt lists everything the usage notice lists: it now names
+  the processor type, the Node.js major version and MCP tool counts.
 - Usage counts. Unless turned off, Sannr sends one document a day to
   `https://sannr.dev/api/v1/usage`: a random install identifier that links one
   day's document to the next, the version, operating system and processor

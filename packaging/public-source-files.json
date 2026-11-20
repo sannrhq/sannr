@@ -562,6 +562,7 @@
     "test/release-workflow.test.mjs",
     "test/report-theme.test.mjs",
     "test/request-cli-usage.test.mjs",
+    "test/request-envelope-truth.test.mjs",
     "test/request-evidence-origin.test.mjs",
     "test/request-onboarding.test.mjs",
     "test/request-routing-fields.test.mjs",

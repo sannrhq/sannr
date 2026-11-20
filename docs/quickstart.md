@@ -95,7 +95,13 @@ npx @sannr/sannr stack add github --base-url https://api.github.com
 ```
 github: .sannr/stacks/github/stack.json
 Knowledge: .sannr/stacks/github/sannr.json
+Managed instructions: written (AGENTS.md).
 ```
+
+The last line is the pointer block `connect` wrote, rewritten to name the new
+stack (both files are named when `CLAUDE.md` holds its own block). Nothing
+outside the block changes, and a repository where `connect` never ran gets no
+such line and no agent file.
 
 A stack is one API you talk to. It holds the base URL, an optional credential
 reference (`--auth bearer:GITHUB_TOKEN` names the variable, never the value), an

@@ -87,8 +87,9 @@ the new value without restarting MCP.
 Writing a replacement file and renaming it over the old file avoids reading a
 partially written token. Removing a variable, deleting the file, or making it
 unreadable withdraws its value; the server does not keep sending the startup
-token. HTTP may then report missing credentials and the API's unauthenticated
-response. OAuth cannot reuse its cached grant when its credential set changes.
+token. An HTTP request is then sent without credentials and its envelope
+carries `auth_missing` (see [request envelope fields](#request-envelope-fields))
+beside the API's unauthenticated response. OAuth cannot reuse its cached grant when its credential set changes.
 
 An explicitly inherited environment variable takes precedence over files. If
 the MCP host supplies the token itself, update its environment and restart the
@@ -471,6 +472,70 @@ implement resource or prompt listing, so those lists report JSON-RPC `-32601`,
 prints `since <previous at>: no comparable declaration changes; comparison incomplete`.
 It explicitly names the unavailable resource and prompt comparisons; the unchanged
 tool declaration remains comparable.
+
+## Request envelope fields
+
+`expect` is always an array of clauses. Any other value, such as
+`{"status":201}`, a string or a number, refuses with `EXPECT_NOT_ARRAY`
+(`mode: "refused"`, `ok: false`) before anything is sent; in a batch, one such
+step refuses the whole batch with `attempted: 0` and
+`error.details.request_index`, which counts through `requests` and then
+`finally` from 0 (a one-request batch whose `finally` step is refused reports
+index 1). A batch is checked whole before its first step,
+protocol steps included: a GraphQL, JSON-RPC, gRPC or WebSocket step with such
+an `expect` also refuses the batch with `EXPECT_NOT_ARRAY` and `attempted: 0`.
+A single protocol request outside a batch refuses with its existing
+`PROTOCOL_INPUT_INVALID`. A missing `expect`, `null` (as for any other
+optional input left unset) or an empty array means no assertions. A malformed clause inside the array fails as `invalid`. The same
+rule holds for `request envelope`, `protocol` JSON input and suite files.
+
+When every assertion passes, `mode` is `"assert"` and `data` is `null`: a
+passing check needs no payload. If the call also gives `fields`, `data` is
+what the same call returns without `expect`, for every kind of response: for
+JSON, only those keys from each record, with `discovery.unknown_fields` naming
+any that the response lacked; for a response that is not JSON, the same
+bounded text summary. Protocol requests that take `fields` behave the same
+way. When an assertion fails, `data` carries a bounded sample of the body as
+before.
+
+`auth_missing` appears when an HTTP request went to the network although its
+configured credential reference had no value. It names variables, never
+values, and the source of the reference (a stack environment and its stack
+file, a legacy `hosts` entry or environment, or `API_AUTH`). It has one of two
+shapes:
+
+- A response came back, whatever its status (including when a later hop or
+  page then failed, or the response was oversized or invalid):
+  `{code: "AUTH_ENV_MISSING", env: ["NAME"], sent_without_credentials: true,
+  message, next}`, and the message says the request was sent without
+  credentials.
+- A network attempt was made and no response came back (a timeout, a reset or
+  refused connection, a host that does not resolve):
+  `{code: "AUTH_ENV_MISSING", env: ["NAME"], attempted_without_credentials:
+  true, message, next}`, and the message says the request was attempted
+  without credentials and no response was received. `sent_without_credentials`
+  is absent.
+
+A request the client rejects before any network attempt (an invalid header
+name or value, an invalid method, a body on a GET) carries no `auth_missing`,
+like every other refusal. `ok`, `error` and the exit code are unchanged by it
+(a 401 or 403 also sets `error` to `AUTH_ENV_MISSING`). Batch steps carry it
+on their own results, and so do the steps of `suite run --json` and
+`verify --json` and the operations in the `learn` report (the report only;
+the committed knowledge file never carries the notice). The CLI prints one line per
+variable on standard error for the whole command:
+`warning: AUTH_ENV_MISSING: NAME is not set; the request was sent without
+credentials.`, or `...; the request was attempted without credentials and no
+response was received.` when no request without it got a response. A missing
+Basic pair, a suite step that declares `auth`, and map reads refuse before
+sending instead.
+
+`rate_limit` holds only what the server said: `limit`, `remaining` and
+`reset` from `RateLimit-*` or `X-RateLimit-*` headers, plus
+`throttled_by_server` and `retry_after_ms` on a 429 and `throttled` and
+`waited_ms` when this client waited. It is `null` when the server sent no
+rate-limit headers and nothing was throttled. The client's own concurrency
+setting is not reported there.
 
 ## Named stack selection
 

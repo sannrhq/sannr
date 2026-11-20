@@ -91,7 +91,7 @@ import { noteDataText, noteCorrectionConflicts, NOTE_DATA_MEANING, decorateNoteR
 import { loadNoteReadContext, reviewLaneSummary, reviewAuthorSummary } from '../lib/note-read-model.mjs';
 import { configuredHttpContracts, loadHttpContract, httpContractMountInfo } from '../lib/http-operation-context.mjs';
 import { showObservationSummary, observationConfidence } from '../lib/show-observations.mjs';
-import { planPointers, refreshNotePointers, inspectPointerFiles, pointerPathProblem, writableDestinationProblem, containsMachineLocalPath } from '../lib/note-pointers.mjs';
+import { planPointers, refreshNotePointers, stackRefreshLines, stackRefreshAdvice, inspectPointerFiles, pointerPathProblem, writableDestinationProblem, containsMachineLocalPath } from '../lib/note-pointers.mjs';
 import { stacksMigrationRequired } from '../lib/stack-migration-state.mjs';
 import { readDraftNote, markDraftNoteAccepted } from '../lib/draft-notes.mjs';
 import { stackEvidenceClasses, formatEvidenceClassCounts, evidenceClass, projectKnownNotes, rankNoteRecords } from '../lib/evidence-confidence.mjs';
@@ -101,7 +101,7 @@ function requireStackMigrationBeforeWriting(root) {
   if (refusal) die(refusal.code, refusal.message, refusal.command);
 }
 
-import { cliStart, noticeText, takeConnectNotice, telemetryStatus, telemetryShow, telemetryOff, telemetryOn, telemetryReset, renderStatus, renderShow } from '../lib/telemetry.mjs';
+import { cliStart, noticeText, printOnNotice, takeConnectNotice, telemetryStatus, telemetryShow, telemetryOff, telemetryOn, telemetryReset, renderStatus, renderShow } from '../lib/telemetry.mjs';
 import { LAYOUT, LEGACY_LAYOUT, layoutFor, planLayout, ensureLayout, inspectLayoutReadme, legacyLayoutEntries, migrateLayout, projectedLayoutFiles } from "../lib/layout.mjs";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -319,11 +319,12 @@ async function cmdProtocol(argv) {
   if (!stackCatalog(repoRoot()).stacks.length && !isBuiltinStack(input.stack))
     selectRequestConfig(repoRoot(), environment ?? input.environment);
   if (environment !== undefined) input.environment = environment;
-  const { apiRequest, runEnvelope, transportError } = await import("../lib/client.mjs");
+  const { apiRequest, runEnvelope, transportFailure, missingCredentialWarnings } = await import("../lib/client.mjs");
   let result;
   try { result = Object.hasOwn(input, "requests") ? await runEnvelope(input, { initiator: "cli.protocol" }) : await apiRequest(input, { initiator: "cli.protocol" }); }
-  catch (error) { result = { ok: false, error: transportError(error), attempted: error.requestAttempts ?? 0 }; }
+  catch (error) { result = transportFailure(error, { ok: false, attempted: error.requestAttempts ?? 0 }); }
   console.log(JSON.stringify(result, null, 1));
+  for (const line of missingCredentialWarnings(result)) console.error(line);
   process.exitCode = result.ok ? 0 : 1;
 }
 
@@ -586,8 +587,40 @@ function cmdStack(argv) {
       if (inventory.error) die(inventory.error.code, inventory.error.message, inventory.error.next);
     } else saveContext(root, emptyContext({ name: created.document.title, contractPath: null, contractDigest: null }));
   });
-  const report = { stack: created.stack, wrote: created.stackFile, context: created.contextFile, files: created.created };
-  console.log(argv.includes('--json') ? JSON.stringify(report, null, 2) : `${created.stack}: ${created.stackFile}\nKnowledge: ${created.contextFile}`);
+  const pointers = refreshStackPointers(root, () => created.scope);
+  const report = { stack: created.stack, wrote: created.stackFile, context: created.contextFile, files: created.created, pointers };
+  console.log(argv.includes('--json') ? JSON.stringify(report, null, 2)
+    : `${created.stack}: ${created.stackFile}\nKnowledge: ${created.contextFile}${stackPointerLine(pointers)}`);
+  if (pointers.state === 'failed') process.exitCode = 1;
+}
+// The managed blocks connect wrote into AGENTS.md and CLAUDE.md list the
+// stacks. A command that adds a stack or moves an operation between stacks
+// refreshes them the way a second connect would (the same refresh a note
+// runs), so the agent is never told there is no stack when there is. Only
+// blocks that already exist are rewritten; a repository that never ran
+// connect gets no agent file, and text outside the block is left as it is.
+// Every stack-changing command (stack add, stack move, stack import, init)
+// gives the same advice: the change is saved, so fix the named file and run
+// connect. Repeating the command is not offered: on init's first-stack path
+// it would refuse with CONTRACT_SELECTION_CONFLICT. Each failure carries its
+// own advice as `next`, so --json and init's JSON output say it too.
+const STACK_REFRESH_RETRY = `The stack change is saved. Fix the named file, then run ${CLI_NAME} connect to refresh the managed instructions.`;
+function withStackAdvice(pointers) {
+  return pointers.state !== 'failed' ? pointers : { ...pointers, retry: STACK_REFRESH_RETRY,
+    failures: pointers.failures.map(failure => ({ ...failure, next: stackRefreshAdvice(failure, CLI_NAME) })) };
+}
+function refreshStackPointers(root, selectScope, saved = 'The stack change was saved') {
+  let scope;
+  try { scope = selectScope(); }
+  catch (error) { return withStackAdvice({ state: 'failed', files: [], failures: [{ code: error.code ?? 'POINTER_WRITE_FAILED',
+    reason: `${saved}, but the managed instruction blocks could not be refreshed.` }] }); }
+  return withStackAdvice(withStackScope(scope, () => refreshNotePointers(root, STACK_REFRESH_RETRY, { saved, onlyWithBlock: true })));
+}
+// The report and per-failure advice live in lib/note-pointers.mjs so they
+// can be tested without running a command.
+function stackPointerLine(pointers) {
+  const lines = stackRefreshLines(pointers, CLI_NAME);
+  return lines.length ? `\n${lines.join('\n')}` : '';
 }
 function cmdStacks(argv) {
   if (argv.some((value, i) => i && value !== '--json')) die('STACK_ARGUMENT_INVALID', `Use ${CLI_NAME} stacks [--json].`);
@@ -664,6 +697,11 @@ function cmdInit(argv) {
     `Make that project target writable, then re-run ${commandResolution.local.command} init --agents.`);
   saveContext(root, ctx);
   const pointers = applyPointerPlans(pointerPlans);
+  // Without --agents, init still changed the stack's knowledge (and on the
+  // first-stack path created the stack), so blocks connect already wrote are
+  // refreshed as after stack add. --agents has just written them in full.
+  const refreshed = argv.includes("--agents") ? null
+    : refreshStackPointers(root, () => currentStackScope(), "The stack's knowledge was saved");
   const omitted = argv.includes("--agents")
     ? pointerOmissions(commandResolution, POINTER_FILES) : [];
 
@@ -674,10 +712,12 @@ function cmdInit(argv) {
     ...(r.skippedRoutes.length ? { skipped_routes: r.skippedRoutes } : {}),
     source_mapped: `${mapped}/${Object.keys(ctx.operations).length}`,
     pointers_written: pointers,
+    ...(refreshed ? { pointers: refreshed } : {}),
     omitted,
     command_resolution: publicCommandResolution(commandResolution),
     next: `${CLI_NAME} learn — execute safe reads and record what is actually true.`,
   }, null, 1));
+  if (refreshed?.state === "failed") process.exitCode = 1;
 }
 
 // Pointer blocks.
@@ -1011,7 +1051,7 @@ async function cmdStackImport(argv) {
       // covers only the stacks that are in place, and names the one that failed.
       if (applied.failed) receipt = { ...importReceipt(plan, { written: applied.written }), ...(applied.written.length ? {} : { layout_files: [] }),
         failed: applied.failed, not_attempted: applied.not_attempted };
-      receipt.pointers = applied.scope ? withStackScope(applied.scope, () => refreshNotePointers(root, 'Repeat the same import command; an unchanged import only retries the refresh.'))
+      receipt.pointers = applied.scope ? refreshStackPointers(root, () => applied.scope)
         : { state: 'not-run', files: [] };
     }
     opened.release();
@@ -1045,7 +1085,9 @@ async function cmdStackImport(argv) {
     }
     if (receipt.layout_files.length) lines.push(`${dryRun ? 'Would also write' : 'Also wrote'} the managed directory's own files: ${receipt.layout_files.join(', ')}`);
     if (receipt.failed) lines.push(`Not written: ${[receipt.failed.stack, ...receipt.not_attempted].join(', ')}.`);
-    lines.push(dryRun ? 'Dry run: nothing was written. No API request was sent.' : `No API request was sent. Managed instructions: ${receipt.pointers.state}.`);
+    lines.push(dryRun ? 'Dry run: nothing was written. No API request was sent.' : 'No API request was sent.');
+    // The same file-by-file report and advice as stack add and stack move.
+    if (!dryRun) lines.push(...stackRefreshLines(receipt.pointers.state === 'not-run' ? { state: 'not-run', files: [] } : receipt.pointers, CLI_NAME));
     console.log(lines.join('\n'));
   }
   if (receipt.failed) {
@@ -1073,12 +1115,15 @@ async function cmdStackMove(argv) {
   }
   if (!to || !operation) die('STACK_MOVE_ARGUMENT_INVALID', 'Name one operation and a destination stack.', `${CLI_NAME} stack move --to <stack> "<METHOD /path>"`);
   assertWritableStack(to); assertWritableStack(from);
-  try {
-    const report = moveStackOperation(repoRoot(), { to, from, operation });
-    console.log(argv.includes('--json') ? JSON.stringify(report, null, 2)
-      : `${report.state}: ${operation} → ${to}. Run ${CLI_NAME} connect to refresh managed instructions.`);
-  } catch (error) { die(error.code ?? 'STACK_MOVE_FAILED', error.message,
+  const root = repoRoot();
+  let report;
+  try { report = moveStackOperation(root, { to, from, operation }); }
+  catch (error) { die(error.code ?? 'STACK_MOVE_FAILED', error.message,
     error.next ?? `Inspect ${CLI_NAME} stacks and name an unambiguous source with --from.`); }
+  report.pointers = refreshStackPointers(root, () => stackScope(root, { stack: to }));
+  console.log(argv.includes('--json') ? JSON.stringify(report, null, 2)
+    : `${report.state}: ${operation} → ${to}.${stackPointerLine(report.pointers)}`);
+  if (report.pointers.state === 'failed') process.exitCode = 1;
 }
 
 async function cmdConnect(argv, { silent = false, selectedContract, createdStackFiles = [], firstStackReport = null } = {}) {
@@ -1275,7 +1320,26 @@ async function cmdConnect(argv, { silent = false, selectedContract, createdStack
   let context = ctx ? "present" : "skipped";
   let inventoryPlan = null;
   let contextProblem = null;
-  if (!argv.includes("--no-pointers")) {
+  // Several stacks and none selected: there is no single knowledge file to
+  // plan, and the legacy path is not one of them. Report each stack's own
+  // store, read from disk, instead of that file as missing.
+  const stackSummary = (row, { planned } = {}) => withStackScope(stackScope(root, { stack: row.name }), () => {
+    const stackCtx = planned ? planned.ctx : loadContext(root), stackCfg = planned ? cfg : resolveConfig(root);
+    const classes = stackEvidenceClasses(root, stackCtx ?? {}, planned ? { config: stackCfg,
+      contract: planned.contract ? loadHttpContract(planned.contract, { pathPrefix: stackCfg.contractPathPrefix }) : null }
+      : { config: stackCfg, commits: false });
+    return { stack: row.name, ...(row.name === stackCatalog(root).defaults?.default_stack ? { default: true } : {}),
+      ...(planned ? { selected: true } : {}), knowledge: contextFile(),
+      state: planned ? planned.state : stackCtx ? "present" : "missing",
+      contract: stackCfg.contract ? (existsSync(stackCfg.contract) ? "bound" : "missing") : "not_bound",
+      base_url: stackCfg.baseUrlSource === "config" ? "configured" : "missing",
+      operations: classes.operations.size, evidence_classes: classes.counts };
+  });
+  let stackSummaries = unselectedStacks ? stackCatalog(root).stacks.map(row => stackSummary(row)) : null;
+  if (stackSummaries) {
+    const missing = stackSummaries.filter(row => row.state !== "present").map(row => row.stack);
+    context = missing.length ? `partial — no knowledge file for ${missing.join(", ")}` : "present";
+  } else if (!argv.includes("--no-pointers")) {
     // The setup plan is authoritative, including a refused or absent contract.
     const r = inventoryContext(root, { write: false, contractPath: cfg.contract });
     if (r.error) {
@@ -1289,6 +1353,12 @@ async function cmdConnect(argv, { silent = false, selectedContract, createdStack
       context = loadContext(root) ? "present" : (dryRun ? "would write" : "wrote");
     }
   }
+
+  // With a stack selected (a default, or --stack) among several, the closing
+  // lines still list every stack; the selected one shows connect's own plan.
+  if (!stackSummaries && currentStackScope() && stackCatalog(root).stacks.length > 1)
+    stackSummaries = stackCatalog(root).stacks.map(row => stackSummary(row, row.name === currentStackScope().stack
+      ? { planned: { ctx, contract: contractPlan.contract, state: context.split(" — ")[0] } } : undefined));
 
   // connect is the documented cold-install entrypoint too. Plan its first
   // inventory in the current layout, using the same creator as init/start.
@@ -1522,6 +1592,7 @@ async function cmdConnect(argv, { silent = false, selectedContract, createdStack
 
   const report = {
     ...(unselectedStacks ? { stack_selection: { state: 'not_selected', code: 'STACK_REQUIRED', available: stackCatalog(root).stacks.map(row => row.name) } } : {}),
+    ...(stackSummaries ? { stacks: stackSummaries } : {}),
     registry: registryStep,
     ...(firstStack_ ? { first_stack: firstStack_ } : {}),
     ...(dryRun ? { dry_run: true } : {}),
@@ -1607,9 +1678,15 @@ async function cmdConnect(argv, { silent = false, selectedContract, createdStack
     if (registryStep.reason) out.push(`       ${registryStep.reason}`);
     // "skipped" carries its reason after an em dash; render the reason on its
     // own line so the filename stays in the column every other row uses.
-    const [ctxState, ...ctxWhy] = context.split(" — ");
-    out.push(`  ${ctxState.padEnd(9)} ${contextFile()}`);
-    if (ctxWhy.length) out.push(`       ${ctxWhy.join(" — ")}`);
+    if (stackSummaries) for (const row of stackSummaries) {
+      out.push(`  ${row.state.padEnd(9)} ${row.knowledge}${row.default ? "   (default stack)" : ""}`);
+      if (row.selected && context.includes(" — ")) out.push(`       ${context.split(" — ").slice(1).join(" — ")}`);
+    }
+    else {
+      const [ctxState, ...ctxWhy] = context.split(" — ");
+      out.push(`  ${ctxState.padEnd(9)} ${contextFile()}`);
+      if (ctxWhy.length) out.push(`       ${ctxWhy.join(" — ")}`);
+    }
     const unresolved = credentials.filter((c) => c.state !== "envFile");
     if (unresolved.length) {
       out.push("", "  credentials an MCP host will NOT inherit from your shell:");
@@ -1919,21 +1996,27 @@ async function cmdLearn(argv) {
 
   let learned = 0, failed = 0, drifted = 0, requestAttempts = 0;
   const preview = [], outcomes = [];
-  const { apiLearnRead, transportError } = reads.length ? await import("../lib/client.mjs") : {};
+  const { apiLearnRead, transportError, missingCredentialWarnings } = reads.length ? await import("../lib/client.mjs") : {};
+  // One standard-error line per variable for the whole command, printed after
+  // the reads: "sent" if any read without it got a response, else "attempted".
+  const credentialNotices = [];
   for (const [op, entry] of reads) {
     const [method, path] = op.split(" ");
     let observation;
     try {
       observation = await apiLearnRead({ method, path, onAttempt: () => { requestAttempts += 1; } });
     } catch (error) {
+      if (error?.authMissing) credentialNotices.push({ auth_missing: error.authMissing });
       const detail = transportError(error).code;
       const transportFailed = ["TRANSPORT_FAILED", "REQUEST_TIMEOUT", "ECONNREFUSED", "ECONNRESET",
         "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"].includes(detail);
       if (transportFailed) failed += 1;
       const receipt = { op, outcome: transportFailed ? "unreachable" : "client_failed", code: detail, verified: false };
-      outcomes.push(receipt);
+      // The report (never the recorded knowledge) says the read went out without its credential.
+      const reported = error?.authMissing ? { ...receipt, auth_missing: error.authMissing } : receipt;
+      outcomes.push(reported);
       if (dryRun) {
-        preview.push(transportFailed ? { op, unreachable: detail } : { ...receipt, status: null,
+        preview.push(transportFailed ? { op, unreachable: detail, ...(reported.auth_missing ? { auth_missing: reported.auth_missing } : {}) } : { ...reported, status: null,
           would_promote: { status_codes: [], fields: {} }, would_refuse: [] });
         continue;
       }
@@ -1946,6 +2029,7 @@ async function cmdLearn(argv) {
     }
 
     const { result, status, drift, body, verified } = observation;
+    if (result.auth_missing) credentialNotices.push(result);
     const redirected = drift.some(item => item.kind === "redirect");
     if (redirected) drifted += 1;
     const outcome = verified ? "verified" : status === 401 || status === 403 ? "authentication_failed"
@@ -1953,19 +2037,21 @@ async function cmdLearn(argv) {
     const receipt = { op, outcome, status, verified, evidence: result.evidence ?? null,
       assertions: result.assertions ? { passed: result.assertions.passed, failed: result.assertions.failed } : null,
       ...(result.error?.code ? { code: result.error.code } : {}) };
-    outcomes.push(receipt);
+    // The report (never the recorded knowledge) says the read went out without its credential.
+    const reported = result.auth_missing ? { ...receipt, auth_missing: result.auth_missing } : receipt;
+    outcomes.push(reported);
     const contract = responseSchema(doc, method, path);
     const environment = { name: cfg.name, production: cfg.production };
 
     if (!verified) {
-      if (dryRun) preview.push({ ...receipt, would_promote: { status_codes: [], fields: {} }, would_refuse: [],
+      if (dryRun) preview.push({ ...reported, would_promote: { status_codes: [], fields: {} }, would_refuse: [],
         ...(drift.length ? { drift } : {}) });
       else ctx.operations[op] = recordLearnFailure(entry, { ...receipt, stamp: learnStamp, drift });
       continue;
     }
     if (dryRun) {
       const { promoted, refused } = promotionPreview({ op, body, status, contract, environment });
-      preview.push({ ...receipt, would_promote: { status_codes: promoted.status_codes, fields: promoted.fields },
+      preview.push({ ...reported, would_promote: { status_codes: promoted.status_codes, fields: promoted.fields },
         would_refuse: refused, ...(drift.length ? { drift } : {}) });
       continue;
     }
@@ -1978,6 +2064,7 @@ async function cmdLearn(argv) {
     delete ctx.operations[op].shape_diverged_at;
     learned += 1;
   }
+  if (reads.length) for (const line of missingCredentialWarnings({ results: credentialNotices })) console.error(line);
 
   if (dryRun) {
     // No saveContext or pointer refresh. Private client evidence is retained.
@@ -3318,6 +3405,9 @@ function noteProjection(entry, operation, options = {}) {
     note_projection: { meaning: NOTE_DATA_MEANING, records: projection.records,
       conflicts: noteCorrectionConflicts(entry, projection.history, { operation, stack: currentStackScope()?.stack }) } };
 }
+function printNoteEvidence(reference) {
+  console.log(`    Evidence ${reference.run_id}: attachment-time state ${reference.state}; current receipt availability not checked; ${reference.provenance?.initiator ?? "unknown"}; ${reference.provenance?.transport ?? "unknown"}; ${reference.provenance?.observed_at ?? "unknown time"}${reference.scope?.operation ? `; ${reference.scope.operation}` : ""}. This link does not verify the explanation.`);
+}
 function printNoteReviewData(record) {
   console.log(`    ${terminalText(noteDataText(record))}`);
 }
@@ -3368,11 +3458,15 @@ function stackFactDetail(ctx, { evidence, operation } = {}) {
 function printStackFacts(facts, argv) {
   if (!facts) return;
   console.log("Stack facts (authored guidance):");
+  // Each fact's review line and evidence print under that fact, the same
+  // shape as operation notes. Evidence is looked up by id in the history.
+  const evidenceByNote = new Map(facts.note_history.active.map(record => [record.id, record.provenance?.evidence ?? []]));
   for (const note of facts.note_projection?.records ?? facts.note_history.active) {
-    printNoteReviewData(note);
     const operations = note.provenance?.operations;
     const scope = operations === undefined ? "every operation" : validNoteOperations(operations) ? operations.map(terminalText).join(", ") : "invalid scope; review history";
     console.log(`  ${terminalText(note.text)}\n    ${note.id}; ${terminalText(note.provenance?.by ?? "unknown author")}; ${terminalText(note.provenance?.at ?? "unknown date")}; applies to: ${scope}${note.contradictions?.length ? `; conflicts with latest observation (${note.contradictions.join(", ")}) on ${note.contradicted_operations.map(terminalText).join(", ")}` : ""}`);
+    printNoteReviewData(note);
+    for (const reference of evidenceByNote.get(note.id) ?? []) printNoteEvidence(reference);
   }
   for (const issue of facts.note_history.issues) console.log(`  ${issue.code}: ${issue.message}`);
   if (argv.includes("--history")) for (const note of facts.note_history.history) console.log(`  Superseded: ${terminalText(note.text)}; ${note.id}`);
@@ -3429,10 +3523,16 @@ async function printOperationDetail(detail, argv) {
       console.log(`Note history: ${history.state}; ${history.digest}`);
       for (const issue of history.issues) console.log(`  ${issue.severity}: ${issue.code} — ${issue.message}`);
       console.log("Active guidance:");
-      for (const record of detail.note_projection?.records ?? history.active) console.log(`  ${record.id}\n    ${terminalText(record.text)}\n    ${record.provenance?.by ?? "unknown author"}; ${record.provenance?.at ?? "unknown date"}; ${record.evidence_class?.class ?? 'written'}${record.contradictions?.length ? `; conflicts with latest observation: ${record.contradictions.join(', ')}` : ''}${`\n    ${terminalText(noteDataText(record))}`}`);
+      // Each note's evidence prints directly under that note. The displayed
+      // records are a ranked copy of history.active, so the stored evidence
+      // is looked up by note id rather than by position: printing it after
+      // the loop put every run under whichever note happened to be last.
+      const evidenceByNote = new Map(history.active.map(record => [record.id, record.provenance?.evidence ?? []]));
+      for (const record of detail.note_projection?.records ?? history.active) {
+        console.log(`  ${record.id}\n    ${terminalText(record.text)}\n    ${record.provenance?.by ?? "unknown author"}; ${record.provenance?.at ?? "unknown date"}; ${record.evidence_class?.class ?? 'written'}${record.contradictions?.length ? `; conflicts with latest observation: ${record.contradictions.join(', ')}` : ''}${`\n    ${terminalText(noteDataText(record))}`}`);
+        for (const reference of evidenceByNote.get(record.id) ?? []) printNoteEvidence(reference);
+      }
       printNoteConflicts(detail.note_projection);
-      for (const record of history.active) for (const reference of record.provenance?.evidence ?? [])
-        console.log(`    Evidence ${reference.run_id}: attachment-time state ${reference.state}; current receipt availability not checked; ${reference.provenance?.initiator ?? "unknown"}; ${reference.provenance?.transport ?? "unknown"}; ${reference.provenance?.observed_at ?? "unknown time"}${reference.scope?.operation ? `; ${reference.scope.operation}` : ""}. This link does not verify the explanation.`);
       if (!history.active.length) console.log("  No active notes.");
       if (argv.includes("--history")) {
         console.log("Superseded history (retained claims):");
@@ -4133,7 +4233,10 @@ async function cmdSuiteRun(argv) {
   // The client resolves config, context and auth at module load; importing it
   // lazily keeps every other sannr command (init/show/note/…) free of
   // that work and of any env problems it might surface.
-  const { runEnvelope, transportError } = await import("../lib/client.mjs");
+  const { runEnvelope, transportError, missingCredentialWarnings } = await import("../lib/client.mjs");
+  // One line per variable for the whole command, not one per suite, printed
+  // after every suite ran: "sent" if any step without it got a response.
+  const credentialNotices = [];
 
   const reports = [];
   for (const name of names) {
@@ -4159,9 +4262,11 @@ async function cmdSuiteRun(argv) {
         attempted: e.requestAttempts ?? (suite.requests.length ? 1 : 0),
         error: transportError(e) };
     }
+    credentialNotices.push(result, ...(result.results ?? []), ...(result.finally ?? []));
     reports.push({ file: file.slice(root.length + 1), ...suiteReport(suite, result) });
   }
 
+  for (const line of missingCredentialWarnings({ results: credentialNotices })) console.error(line);
   const allOk = reports.every((r) => r.ok);
   const requestAttempts = reports.reduce((sum, report) => sum + report.request_attempts, 0);
   const targetFields = requestAttempts > 0
@@ -4491,7 +4596,10 @@ async function cmdVerify(argv) {
 
   // Lazy for the same reason as cmdSuiteRun: only the commands that execute
   // requests should pay for (or surface problems from) client-side config.
-  const { runEnvelope, transportError } = await import("../lib/client.mjs");
+  const { runEnvelope, transportError, missingCredentialWarnings } = await import("../lib/client.mjs");
+  // One line per variable for the whole command, not one per suite, printed
+  // after every suite ran: "sent" if any step without it got a response.
+  const credentialNotices = [];
 
   const reports = [];
   for (const name of names) {
@@ -4528,12 +4636,14 @@ async function cmdVerify(argv) {
           attempted: e.requestAttempts ?? (retained.length ? 1 : 0),
           error: transportError(e) };
       }
+      credentialNotices.push(result, ...(result.results ?? []), ...(result.finally ?? []));
       report = suiteReport({ ...suite, requests: retained, finally: cleanup }, result);
     }
     if (skipped.length) report.skipped = skipped;
     reports.push({ file: file.slice(root.length + 1), ...report });
   }
 
+  for (const line of missingCredentialWarnings({ results: credentialNotices })) console.error(line);
   const drift = driftFrom(reports);
   const allOk = reports.every((r) => r.ok);
   const requestAttempts = reports.reduce((sum, report) => sum + report.request_attempts, 0);
@@ -5865,7 +5975,11 @@ function cmdTelemetry(argv) {
       if (value.still_off.length) parts.push(`These state directories were turned off themselves and stay off until telemetry on is run with them: ${value.still_off.join(", ")}.`);
       if (value.not_lifted.length) parts.push(`These state directories could not be lifted and stay off: ${value.not_lifted.join(", ")}.`);
       if (value.overridden_by) parts.push(`${value.overridden_by.variable ?? "This environment"} still turns it off for processes that have it.`);
-      print(value, [parts.filter(Boolean).join(" "), ...(value.notice ? [value.notice] : [])].join("\n"));
+      const human = [parts.filter(Boolean).join(" "), ...(value.notice ? [value.notice] : [])].join("\n");
+      // A directory never told gets the notice in this output; it is recorded
+      // as printed only once the output was written where it can be read.
+      if (value.notice) printOnNotice(json ? JSON.stringify(value, null, 1) : human);
+      else print(value, human);
     } else {
       const value = telemetryReset();
       print(value, value.changed ? "The install identifier is deleted; a new one is made at the next document. This adds no document to the day."

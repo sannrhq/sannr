@@ -458,3 +458,23 @@ test('an empty rate-limit header reads as absent, never as zero', () => {
   assert.deepEqual(readRateLimit(new Headers({ 'x-ratelimit-limit': '0', 'x-ratelimit-remaining': '0' })),
     { limit: 0, remaining: 0, reset: null });
 });
+
+test('fields with passing assertions returns the projection on HTTP-based protocols; without fields a pass omits data', async t => {
+  const f = await fixture(t, () => ({ body: { data: { item: { id: 'fixture-1' } }, extensions: { cost: 3 } } }));
+  const both = await f.run({ ...query(), fields: ['data'], expect: [{ status: 200 }] });
+  assert.equal(both.ok, true);
+  assert.equal(both.mode, 'assert');
+  assert.deepEqual(both.data, { data: { item: { id: 'fixture-1' } } });
+  const bare = await f.run({ ...query(), expect: [{ status: 200 }] });
+  assert.equal(bare.mode, 'assert');
+  assert.equal(bare.data, null);
+});
+
+test('a protocol request reads expect: null as absent and still refuses another non-array expect', async t => {
+  const f = await fixture(t, () => ({ body: { data: { item: { id: 'fixture-1' } } } }));
+  const unset = await f.run({ ...query(), expect: null });
+  assert.equal(unset.ok, true);
+  assert.equal(unset.assertions, null);
+  const object = await f.run({ ...query(), expect: { status: 200 } });
+  assert.equal(object.error.code, 'PROTOCOL_INPUT_INVALID');
+});

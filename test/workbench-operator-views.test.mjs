@@ -107,6 +107,8 @@ test('Request sends once, shows the recorded response as masked text, and keeps 
   await show(page, 'request'); await choose(page, QUOTE);
   const field = input(page, 'path_orderId');
   assert.equal(field.getAttribute('type'), 'password', 'a sensitive input is masked until the operator shows it');
+  assert.match(page.text('[data-req-mask-note]'), /masked value is also removed from the recorded request and response/u, 'the page says what masking does to the record');
+  assert.match(page.text('[data-req-mask-note]'), /a field with an environment source wherever it appears at any length/u, 'and what an environment source does');
   await type(page, field, ORDER);
   // Enter in a field sends, as the button does.
   await page.key('Enter', input(page, 'path_orderId')); await page.settle(160);

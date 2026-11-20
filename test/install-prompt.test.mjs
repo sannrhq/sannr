@@ -29,3 +29,26 @@ test('a canonical prompt edit updates its README quote without changing neighbor
   assert.throws(() => syncReadmeInstallPrompt(readme + '<!-- install-prompt:begin -->', source), /exactly one/);
   assert.throws(() => readmeInstallExcerpt(source.replace('What it does:', 'More information:')), /What it does/);
 });
+
+test('the prompt\'s usage sentence names everything the first-run notice says is sent', async () => {
+  const { noticeText } = await import('../lib/telemetry.mjs');
+  const notice = noticeText();
+  const usage = /Sannr sends usage counts once a day: .*?APIs or requests\./.exec(read('docs/install-prompt.md'))?.[0];
+  assert.ok(usage, 'the prompt has no usage sentence');
+  // The elements of the document, each matched by its own words only: the
+  // product version ("its version", "the Sannr version") apart from the
+  // Node.js major version, each command apart from each MCP tool.
+  const elements = {
+    'install ID': /\brandom install ID\b/,
+    'product version': /\b(?:its|the \S+) version\b/,
+    'operating system': /\boperating system\b/,
+    'processor type': /\bprocessor type\b/,
+    'Node.js major version': /\bNode\.js major version\b/,
+    'each command': /\beach (?:\S+ )?command\b/,
+    'MCP tool': /\bMCP tool\b/,
+    'API calls': /\bAPI calls\b/,
+  };
+  for (const [element, pattern] of Object.entries(elements))
+    for (const [where, text] of [['notice', notice], ['install prompt', usage]])
+      assert.match(text, pattern, `the ${where} does not name ${element}`);
+});

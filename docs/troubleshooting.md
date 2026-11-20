@@ -139,9 +139,24 @@ connected. `workbench status` shows whether one is running. The other
 Refusals name their code and come before any traffic: `ORIGIN_NOT_CONFIGURED`
 (an absolute URL matches no stack), `STACK_AMBIGUOUS` (two stacks match),
 `STACK_REQUIRED`, `ENVIRONMENT_NOT_FOUND`, a production write guard, or a
-missing credential variable. Add or select the stack and environment the
-message names. A refusal is not an API observation and records nothing about
-the API.
+missing Basic credential pair (`basic:USER_ENV:PASS_ENV` with either variable
+unset). Add or select the stack and environment the message names. A refusal
+is not an API observation and records nothing about the API.
+
+## A request was sent without its credential
+
+A bearer, header, query or OAuth reference whose variable is not set does not
+stop the request: it is sent without credentials, because many APIs answer
+unauthenticated reads. The result says so whatever the status. The envelope
+carries `auth_missing` with the code `AUTH_ENV_MISSING` and the variable names
+in `env`: `sent_without_credentials: true` when a response came back, or
+`attempted_without_credentials: true` when the request timed out or the
+connection failed and no response came back. The CLI prints one
+`warning: AUTH_ENV_MISSING: <NAME> is not set; …` line on standard error,
+worded the same way. `ok` and the exit code still follow the response; a 401
+or 403 also sets `error` to `AUTH_ENV_MISSING`. Export the named variable in
+the environment that runs the request and send it again. A suite step that
+declares its own `auth` refuses with `IMPORTED_AUTH_VALUE_REQUIRED` instead.
 
 ## Something else
 

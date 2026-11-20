@@ -2,10 +2,10 @@ import './helpers/isolated-home.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, symlinkSync, cpSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, symlinkSync, cpSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { LAYOUT } from '../lib/layout.mjs';
 import { HOME_ENV_NAME } from '../lib/brand.mjs';
 import { createFixtureStack } from './helpers/stack-fixture.mjs';
@@ -13,6 +13,8 @@ import { saveSavedRequest, showSavedRequest, listSavedRequests, renameSavedReque
 import { readSavedRequestInputFile, resolveSavedRequestInputs } from '../lib/saved-request-inputs.mjs';
 import { savedRequestAction, savedActionFailure } from '../lib/saved-request-actions.mjs';
 import { inspectRecordedResponse } from '../lib/response-inspection.mjs';
+import { scrubForTest } from '../lib/client.mjs';
+import { withPrivateRequestInputs } from '../lib/request-private-inputs.mjs';
 
 const moduleUrl = new URL('../lib/saved-requests.mjs', import.meta.url).href;
 const write = (file, value) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify(value)); };
@@ -311,4 +313,475 @@ test('incomplete contract drafts block with a named field; missing-body errors e
     assert.equal(JSON.stringify(unsafeEnum).includes('sk_syntheticNeverUseThisValue'), false);
   }
   assert.equal(f.seen.length, 0);
+});
+
+// QA-L3-01. A private request input (a saved request's sensitive string, as
+// the Workbench's Request view and `saved run` send it) is removed from what
+// the client records and returns. A value shorter than six characters is
+// removed only where it stands as a whole value; longer values and configured
+// credentials keep the substring scrub. orderId "1" had rewritten the stored
+// host, port and Date header.
+const R = '[redacted]';
+const showSavedRequestDocument = (root, ref) => structuredClone(showSavedRequest(root, ref).document);
+const scrubWith = (inputs, value, secrets = [], structure) =>
+  JSON.parse(withPrivateRequestInputs(inputs, () => scrubForTest(JSON.stringify(value), secrets, structure)));
+// Inputs whose declaration names an environment source.
+const scrubWithEnvironment = (inputs, value, structure) =>
+  JSON.parse(withPrivateRequestInputs(inputs, () => scrubForTest(JSON.stringify(value), [], structure), { environment: inputs }));
+
+test('a short private input is removed only where it stands as a whole value', () => {
+  const out = scrubWith(['1'], {
+    request: { url: 'http://127.0.0.1:4731/v1/orders/1/quote?ref=1&page=10#1' },
+    response: { headers: { date: 'Thu, 19 Nov 2026 02:46:59 GMT', 'x-order': '1', location: '/v1/orders/1?ref=1' },
+      body: { orderId: '1', label_id: 'lbl_1', count: 1, list: ['1', '11'], 1: 'keyed', text: 'order 1 at 127.0.0.1' } },
+  }, [], 'httpEvidence');
+  assert.equal(out.request.url, `http://127.0.0.1:4731/v1/orders/${R}/quote?ref=${R}&page=10#1`);
+  assert.equal(out.response.headers.date, 'Thu, 19 Nov 2026 02:46:59 GMT');
+  assert.equal(out.response.headers['x-order'], R);
+  assert.equal(out.response.headers.location, `/v1/orders/${R}?ref=${R}`);
+  assert.deepEqual(out.response.body, { orderId: R, label_id: 'lbl_1', count: 1, list: [R, '11'], [R]: 'keyed', text: 'order 1 at 127.0.0.1' });
+  // Encoded forms of a short value still count as the whole value.
+  const spaced = scrubWith(['a b'], { url: 'https://api.example.test/x/a%20b?q=a+b&r=a%20b', v: 'a b', w: 'a%20b' });
+  assert.deepEqual(spaced, { url: `https://api.example.test/x/${R}?q=${R}&r=${R}`, v: R, w: R });
+  const encoded = Buffer.from('abcd').toString('base64');
+  assert.deepEqual(scrubWith(['abcd'], { b: encoded, c: `x${encoded}` }), { b: R, c: `x${encoded}` });
+  // Non-JSON text is one whole value.
+  assert.equal(withPrivateRequestInputs(['M'], () => scrubForTest('M', [])), R);
+  assert.equal(withPrivateRequestInputs(['M'], () => scrubForTest('GMT M', [])), 'GMT M');
+});
+
+test('a private input of six characters or more is still removed inside longer strings', () => {
+  const out = scrubWith(['secret7'], { a: 'lbl_secret7', b: 'http://h.test/p/xsecret7y', c: Buffer.from('secret7').toString('base64') });
+  assert.deepEqual(out, { a: `lbl_${R}`, b: `http://h.test/p/x${R}y`, c: R });
+});
+
+test('an input value never alters what the client writes about the request (origin, method, authUsed); a credential still does', () => {
+  const origin = { observed_at: '2026-11-19T16:03:07.575Z', package_version: '0.1.0-beta.2', build_id: 'build-secret7-1',
+    session_id: 'sess-1111', scope: { provider: 'http://127.0.0.1:4731/v1', operation: 'GET /orders/{orderId}/quote', contract_digest: 'sha256:11secret7' } };
+  const record = { runId: 'run-1', origin, request: { method: 'GET', url: 'http://127.0.0.1:4731/v1/orders/1/secret7', authUsed: 'bearer:ORDERS_TOKEN' },
+    drift: [{ kind: 'pagination-loop', requested: '/v1/orders/1' }] };
+  for (const inputs of [['1'], ['secret7'], ['1', 'secret7', 'v1'], ['GET'], ['bearer'], ['ORDERS_TOKEN']]) {
+    const out = scrubWith(inputs, record, [], 'httpEvidence');
+    assert.deepEqual(out.origin, origin, inputs.join());
+    assert.equal(out.request.method, 'GET', inputs.join());
+    assert.equal(out.request.authUsed, 'bearer:ORDERS_TOKEN', inputs.join());
+  }
+  // Drift quotes what the API returned, so an input is still removed there.
+  assert.equal(scrubWith(['1'], record, [], 'httpEvidence').drift[0].requested, `/v1/orders/${R}`);
+  assert.equal(scrubWith([], record, ['bearer'], 'httpEvidence').request.authUsed, `${R}:ORDERS_TOKEN`);
+  assert.equal(scrubWith(['1', 'secret7'], record, [], 'httpEvidence').request.url, `http://127.0.0.1:4731/v1/orders/${R}/${R}`);
+  const credential = scrubWith(['1'], record, ['secret7'], 'httpEvidence');
+  assert.equal(credential.origin.build_id, `build-${R}-1`);
+  assert.equal(credential.origin.scope.contract_digest, `sha256:11${R}`);
+  assert.equal(credential.origin.observed_at, origin.observed_at);
+});
+
+test('configured credentials keep the substring scrub, short ones included, beside short private inputs', () => {
+  const value = { url: 'http://127.0.0.1:4731/v1/xabz/q?k=ab', header: 'Bearer ab', body: { k: 'zzabzz', ab: 'x', n: '9' } };
+  const today = JSON.parse(scrubForTest(JSON.stringify(value), ['ab']));
+  assert.deepEqual(today, { url: `http://127.0.0.1:4731/v1/x${R}z/q?k=${R}`, header: `Bearer ${R}`, body: { k: `zz${R}zz`, [R]: 'x', n: '9' } });
+  // A short private input that matches nothing, or that equals the credential,
+  // leaves the credential's scrub exactly as it was.
+  for (const input of ['7', 'ab', 'zz']) assert.deepEqual(scrubWith([input], value, ['ab']), today, input);
+  // Today's credential output, byte for byte, with no private input in scope.
+  assert.equal(scrubForTest(JSON.stringify({ d: 'Thu, 19 Nov', u: 'http://127.0.0.1/1' }), ['1']), JSON.stringify({ d: `Thu, ${R}9 Nov`, u: `http://${R}27.0.0.${R}/${R}` }));
+});
+
+const DATE = 'Thu, 19 Nov 2026 02:46:59 GMT';
+
+async function scrubFixture(t) {
+  const root = mkdtempSync(join(tmpdir(), 'private-input-scrub-')), seen = [];
+  const server = createServer((req, res) => {
+    let text = ''; req.on('data', chunk => text += chunk); req.on('end', () => {
+      seen.push(req.url);
+      const url = new URL(req.url, 'http://local'), id = decodeURIComponent(url.pathname.split('/')[3] ?? '');
+      const sent = text ? JSON.parse(text) : {}, size = req.headers['x-size'] ?? sent.size ?? '', note = req.headers['x-note'] ?? '';
+      res.setHeader('date', DATE);
+      res.writeHead(200, { 'content-type': 'application/json', location: `${url.pathname}?ref=${url.searchParams.get('ref')}`, 'x-label': `lbl_${size}`, 'x-trace': 'trace-1111-ok' });
+      res.end(JSON.stringify({ orderId: id, label_id: `lbl_${id}`, echo: { size }, quote: { window: 'am', amount: 1250 }, message: `saw ${note} here` }));
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await new Promise(resolve => server.close(resolve)); rmSync(root, { recursive: true, force: true }); });
+  execFileSync('git', ['init', '--quiet'], { cwd: root });
+  write(join(root, 'openapi.json'), { openapi: '3.0.3', info: { title: 'Fixture', version: '1' }, paths: {
+    '/orders/{orderId}/quote': { get: { parameters: [
+      { name: 'orderId', in: 'path', required: true, schema: { type: 'string' } },
+      { name: 'ref', in: 'query', required: true, schema: { type: 'string' } },
+      { name: 'x-size', in: 'header', required: true, schema: { type: 'string' } },
+      { name: 'x-note', in: 'header', required: true, schema: { type: 'string' } }], responses: { 200: { description: 'ok' } } } },
+    '/labels': { post: { parameters: [{ name: 'x-note', in: 'header', required: true, schema: { type: 'string' } }],
+      requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['size'], properties: { size: { type: 'string' } } } } } },
+      responses: { 200: { description: 'ok' } } } } } });
+  const port = server.address().port, baseUrl = `http://127.0.0.1:${port}/v1`;
+  createFixtureStack(root, { contract: 'openapi.json', baseUrl });
+  const env = { PATH: process.env.PATH, HOME: join(root, 'home'), [HOME_ENV_NAME]: join(root, 'machine'),
+    API_CONTEXT_DIR: root, API_USAGE_LOG: join(root, 'machine', 'usage.jsonl'), API_BUDGET: '6000', API_FRICTION_OFF: '1', NO_COLOR: '1' };
+  mkdirSync(env.HOME, { recursive: true });
+  const saved = saveSavedRequest(root, { kind: 'saved-request', format_version: 1, folder: 'orders', name: 'quote', stack: 'fixture', environment: 'local',
+    request: { method: 'GET', path: '/orders/{orderId}/quote', bindings: { path: { orderId: { $input: 'orderId' } }, query: { ref: { $input: 'ref' } },
+      headers: { 'x-size': { $input: 'size' }, 'x-note': { $input: 'note' } } } },
+    inputs: { orderId: { type: 'string', sensitive: true }, ref: { type: 'string', sensitive: true }, size: { type: 'string', sensitive: true }, note: { type: 'string', sensitive: true } },
+    credentials: [] });
+  // The note here comes from an environment variable: a secret by declaration.
+  const label = saveSavedRequest(root, { kind: 'saved-request', format_version: 1, folder: 'labels', name: 'create', stack: 'fixture', environment: 'local',
+    request: { method: 'POST', path: '/labels', bindings: { headers: { 'x-note': { $input: 'pin' } }, body: { size: { $input: 'size' } } } },
+    inputs: { pin: { type: 'string', source: { env: 'FIXTURE_PIN' } }, size: { type: 'string', sensitive: true } }, credentials: [] });
+  return { root, seen, env, port, ref: saved.ref, labelRef: label.ref };
+}
+// The same library call `saved run` and the Workbench's Send make, in its own process.
+function scrubRun(f, inputs, { ref = f.ref, env = {} } = {}) {
+  const script = `const api=await import(${JSON.stringify(moduleUrl)}); try { console.log(JSON.stringify(await api.runSavedRequest(process.cwd(), ${JSON.stringify(ref)}, { inputs: ${JSON.stringify(inputs)}, initiator: 'cli.saved' }))); } catch (error) { console.log(JSON.stringify({ ok: false, error: { code: error.code, message: error.message } })); }`;
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: f.root, env: { ...f.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = ''; child.stdout.on('data', c => stdout += c); child.stderr.on('data', c => stderr += c);
+    const timer = setTimeout(() => child.kill(), 60_000);
+    child.once('error', reject);
+    child.once('close', code => { clearTimeout(timer); if (code) reject(new Error(`Child ${code}: ${stderr}`)); else try { resolve(JSON.parse(stdout)); } catch { reject(new Error(`Invalid child output: ${stdout} ${stderr}`)); } });
+  });
+}
+
+test('saved run with short sensitive inputs keeps the stored host, port, Date and unrelated text intact', async t => {
+  const f = await scrubFixture(t), note = 'private-note-4412';
+  const result = await scrubRun(f, { orderId: '1', ref: 'M', size: 'M', note });
+  assert.equal(result.status, 200, JSON.stringify(result.error ?? null));
+  assert.equal(f.seen[0], `/v1/orders/1/quote?ref=M`);
+  const dir = join(f.root, LAYOUT.evidence, 'fixture');
+  const evidence = JSON.parse(readFileSync(join(dir, `${result.evidence}.json`), 'utf8'));
+  assert.equal(evidence.request.url, `http://127.0.0.1:${f.port}/v1/orders/${R}/quote?ref=${R}`);
+  assert.equal(evidence.response.headers.date, DATE);
+  assert.equal(evidence.response.headers['content-type'], 'application/json');
+  assert.equal(evidence.response.headers.location, `/v1/orders/${R}/quote?ref=${R}`);
+  assert.equal(evidence.response.headers['x-label'], 'lbl_M');
+  assert.equal(evidence.response.headers['x-trace'], 'trace-1111-ok');
+  // The record's own provenance is never altered by an input value.
+  const origin = JSON.stringify(evidence.origin);
+  assert.ok(origin && !origin.includes(R), origin);
+  assert.match(evidence.origin.observed_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  assert.equal(evidence.response.body.orderId, R);
+  assert.equal(evidence.response.body.label_id, 'lbl_1');
+  // What the request carried: whole header values.
+  assert.equal(evidence.request.headers['x-size'], R);
+  assert.equal(evidence.request.headers['x-note'], R);
+  // The returned envelope's data.
+  assert.equal(result.data.orderId, R);
+  assert.deepEqual(result.data.echo, { size: R });
+  assert.equal(result.data.label_id, 'lbl_1');
+  assert.deepEqual(evidence.response.body.echo, { size: R });
+  assert.deepEqual(evidence.response.body.quote, { window: 'am', amount: 1250 });
+  // A value of six characters or more is still removed inside a longer string.
+  assert.equal(evidence.response.body.message, `saw ${R} here`);
+  for (const file of readdirSync(dir)) assert.ok(!readFileSync(join(dir, file), 'utf8').includes(note), file);
+  assert.ok(!readFileSync(f.env.API_USAGE_LOG, 'utf8').includes(note));
+  assert.ok(!JSON.stringify(result).includes(note));
+  assert.ok(!readFileSync(f.env.API_USAGE_LOG, 'utf8').includes(`127.0.0.${R}`));
+  assert.ok(!JSON.stringify(result).includes(`${R}27.0.0`));
+  // The stored request body, and the usage row: a path segment the usage log
+  // keeps (it templates digits, not "Q7") is removed as a whole value.
+  const posted = await scrubRun(f, { size: 'M' }, { ref: f.labelRef, env: { FIXTURE_PIN: 'long-pin-value' } });
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, `${posted.evidence}.json`), 'utf8')).request.body, { size: R });
+  const named = await scrubRun(f, { orderId: 'Q7', ref: 'M', size: 'M', note });
+  assert.equal(f.seen.at(-1), '/v1/orders/Q7/quote?ref=M');
+  const rows = readFileSync(f.env.API_USAGE_LOG, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  const row = rows.find(r => r.runId === named.evidence);
+  assert.equal(row.path, `/v1/orders/${R}/quote`);
+  assert.equal(row.method, 'GET');
+  // A typed value equal to the method leaves the row's method, and the run
+  // record's, as the client wrote them.
+  const method = await scrubRun(f, { orderId: 'Q8', ref: 'M', size: 'GET', note });
+  const methodRow = readFileSync(f.env.API_USAGE_LOG, 'utf8').trim().split('\n').map(line => JSON.parse(line)).find(r => r.runId === method.evidence);
+  assert.equal(methodRow.method, 'GET');
+  assert.equal(JSON.parse(readFileSync(join(dir, `${method.evidence}.json`), 'utf8')).request.method, 'GET');
+  assert.equal(JSON.parse(readFileSync(join(dir, `${method.evidence}.json`), 'utf8')).request.headers['x-size'], R);
+});
+
+test('an input value never alters the usage row\'s client-written fields; the row\'s path stays scrubbed; a credential still does', () => {
+  const row = { ts: '2026-11-19T16:03:07.575Z', project: 'repo-1', origin: 'own', host: '127.0.0.1', method: 'GET', stack: 'fixture',
+    path: '/v1/orders/Q7/quote', queryKeys: ['ref'], status: 200, ok: true, mode: 'passthrough', authUsed: 'bearer:ORDERS_TOKEN',
+    environment: 'local', drift: ['pagination-loop'], knownOp: 'GET /orders/{orderId}/quote', friction: 'retry', runId: 'run-1', session_id: 'sess-1' };
+  for (const input of ['GET', 'bearer', 'fixture', 'local', 'repo-1', 'retry', 'ORDERS_TOKEN', 'pagination-loop']) {
+    // None of these occurs in knownOp except as part of a longer value.
+    const out = scrubWith([input, 'Q7'], row, [], 'usage');
+    assert.deepEqual({ ...out, path: row.path }, row, input);
+    assert.equal(out.path, `/v1/orders/${R}/quote`, input);
+  }
+  assert.equal(scrubWith(['orders'], row, [], 'usage').knownOp, `GET /${R}/{orderId}/quote`);
+  const credential = scrubWith(['GET'], row, ['GET', 'fixture', 'bearer'], 'usage');
+  assert.equal(credential.method, R);
+  assert.equal(credential.stack, R);
+  assert.equal(credential.authUsed, `${R}:ORDERS_TOKEN`);
+  assert.equal(credential.knownOp, `${R} /orders/{orderId}/quote`);
+});
+
+test('the usage row\'s URL- and API-derived fields, and fields not listed, stay scrubbed for inputs', () => {
+  const row = { origin: 'own', host: '127.0.0.1', method: 'GET', path: '/v1/x', queryKeys: ['ref', 'page'], rateLimitRemaining: '59', futureField: 'zz' };
+  assert.deepEqual(scrubWith(['ref'], row, [], 'usage').queryKeys, [R, 'page']);
+  assert.equal(scrubWith(['127.0.0.1'], row, [], 'usage').host, R);
+  assert.equal(scrubWith(['59'], row, [], 'usage').rateLimitRemaining, R);
+  assert.equal(scrubWith(['zz'], row, [], 'usage').futureField, R);
+  assert.equal(scrubWith(['GET'], row, [], 'usage').method, 'GET');
+});
+
+test('an environment-declared input scrubs everywhere except the fields the client writes about the request', () => {
+  const origin = { observed_at: '2026-11-19T16:03:07.575Z', package_version: '0.1.0-beta.2', scope: { operation: 'GET /orders/{orderId}/quote' } };
+  const record = { origin, request: { method: 'GET', url: 'http://127.0.0.1:4731/v1/GET/x', authUsed: 'bearer:ORDERS_TOKEN', headers: { 'x-a': 'xxGETxx bearer' } } };
+  for (const input of ['GET', 'bearer', 'beta', '0.1.0', '16:03', 'orders']) {
+    const out = scrubWithEnvironment([input], record, 'httpEvidence');
+    assert.deepEqual(out.origin, origin, input);
+    assert.equal(out.request.method, 'GET', input);
+    assert.equal(out.request.authUsed, 'bearer:ORDERS_TOKEN', input);
+  }
+  // Elsewhere the same short values keep the full substring scrub.
+  assert.equal(scrubWithEnvironment(['GET'], record, 'httpEvidence').request.headers['x-a'], `xx${R}xx bearer`);
+  assert.equal(scrubWithEnvironment(['GET'], record, 'httpEvidence').request.url, `http://127.0.0.1:4731/v1/${R}/x`);
+  const row = { origin: 'own', method: 'GET', authUsed: 'bearer:ORDERS_TOKEN', knownOp: 'GET /orders/{orderId}/quote', path: '/v1/own/GET' };
+  const out = scrubWithEnvironment(['GET', 'own', 'bearer'], row, 'usage');
+  assert.deepEqual({ ...out, path: row.path, knownOp: row.knownOp }, row);
+  assert.equal(out.path, `/v1/${R}/${R}`);
+  // knownOp can be the concrete request path, so it is scrubbed like the path.
+  assert.equal(out.knownOp, `${R} /orders/{orderId}/quote`);
+});
+
+test('an input read from an environment variable keeps the full scrub at any length; the same value typed is removed only whole', async t => {
+  const f = await scrubFixture(t), pin = '4412';
+  const dir = join(f.root, LAYOUT.evidence, 'fixture');
+  const fromEnv = await scrubRun(f, { size: 'M' }, { ref: f.labelRef, env: { FIXTURE_PIN: pin } });
+  assert.equal(fromEnv.status, 200, JSON.stringify(fromEnv.error ?? null));
+  const envEvidence = JSON.parse(readFileSync(join(dir, `${fromEnv.evidence}.json`), 'utf8'));
+  assert.equal(envEvidence.response.body.message, `saw ${R} here`);
+  assert.equal(fromEnv.data.message, `saw ${R} here`);
+  assert.equal(envEvidence.request.headers['x-note'], R);
+  assert.equal(envEvidence.request.method, 'POST');
+  for (const file of readdirSync(dir)) assert.ok(!readFileSync(join(dir, file), 'utf8').includes(pin), file);
+  assert.ok(!JSON.stringify(fromEnv).includes(pin));
+  assert.ok(!readFileSync(f.env.API_USAGE_LOG, 'utf8').includes(pin));
+  const typed = await scrubRun(f, { orderId: 'Q7', ref: 'M', size: 'M', note: pin });
+  const typedEvidence = JSON.parse(readFileSync(join(dir, `${typed.evidence}.json`), 'utf8'));
+  assert.equal(typedEvidence.request.headers['x-note'], R);
+  assert.equal(typedEvidence.response.body.message, `saw ${pin} here`);
+  assert.equal(typed.data.message, `saw ${pin} here`);
+});
+
+test('an input whose declaration names an environment source keeps the full scrub when the caller supplies the value, sensitive or not', async t => {
+  const f = await scrubFixture(t), pin = '4412';
+  const dir = join(f.root, LAYOUT.evidence, 'fixture');
+  const { id: _id, ...copy } = showSavedRequestDocument(f.root, f.labelRef);
+  const marked = saveSavedRequest(f.root, { ...copy, name: 'create-marked',
+    inputs: { pin: { type: 'string', sensitive: true, source: { env: 'FIXTURE_PIN' } }, size: { type: 'string', sensitive: true } } });
+  for (const [ref, label] of [[f.labelRef, 'sensitive omitted'], [marked.ref, 'sensitive: true']]) {
+    const result = await scrubRun(f, { pin, size: 'M' }, { ref });
+    assert.equal(result.status, 200, label);
+    assert.equal(f.seen.length > 0 && f.seen.at(-1), '/v1/labels', label);
+    const evidence = JSON.parse(readFileSync(join(dir, `${result.evidence}.json`), 'utf8'));
+    assert.equal(evidence.request.headers['x-note'], R, label);
+    assert.equal(evidence.response.body.message, `saw ${R} here`, label);
+    assert.equal(result.data.message, `saw ${R} here`, label);
+    assert.ok(!JSON.stringify(result).includes(pin), label);
+    for (const file of readdirSync(dir)) assert.ok(!readFileSync(join(dir, file), 'utf8').includes(pin), `${label}: ${file}`);
+    assert.ok(!readFileSync(f.env.API_USAGE_LOG, 'utf8').includes(pin), label);
+  }
+});
+
+test('the usage row\'s knownOp is scrubbed for inputs like the path, through a real run', async t => {
+  const f = await scrubFixture(t);
+  const rows = () => readFileSync(f.env.API_USAGE_LOG, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  // Accepted by ruling: a typed value equal to a word of the template alters it.
+  const typed = await scrubRun(f, { orderId: 'Q7', ref: 'M', size: 'orders', note: 'private-note-4412' });
+  assert.equal(rows().find(r => r.runId === typed.evidence).knownOp, `GET /${R}/{orderId}/quote`);
+  const fromEnv = await scrubRun(f, { size: 'M' }, { ref: f.labelRef, env: { FIXTURE_PIN: 'POST' } });
+  assert.equal(fromEnv.status, 200);
+  assert.equal(rows().find(r => r.runId === fromEnv.evidence).knownOp, `${R} /labels`);
+  // A short typed value that only stands inside the template leaves it.
+  const short = await scrubRun(f, { orderId: 'Q8', ref: 'M', size: 'GET', note: 'private-note-4412' });
+  assert.equal(rows().find(r => r.runId === short.evidence).knownOp, 'GET /orders/{orderId}/quote');
+});
+
+test('the usage row\'s origin is a fixed word the client writes; a typed value equal to it leaves it', async t => {
+  const f = await scrubFixture(t);
+  const result = await scrubRun(f, { orderId: 'Q7', ref: 'M', size: 'M', note: 'own' });
+  const row = readFileSync(f.env.API_USAGE_LOG, 'utf8').trim().split('\n').map(line => JSON.parse(line)).find(r => r.runId === result.evidence);
+  assert.equal(row.origin, 'own');
+  assert.equal(JSON.parse(readFileSync(join(f.root, LAYOUT.evidence, 'fixture', `${result.evidence}.json`), 'utf8')).request.headers['x-note'], R);
+});
+
+// Review of PR 25, condition 1. With no contract the operation the client
+// matched is the method and the concrete path, and an unusable file in
+// .sannr/requests makes the saved-request context attach to it as known.op.
+// The usage row's knownOp must then be scrubbed like everything else.
+test('on a stack with no contract, a private path value never reaches the usage row, a stored file or the receipt', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'no-contract-scrub-')), seen = [];
+  const server = createServer((req, res) => { seen.push(req.url); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, result: { id: 7 } })); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await new Promise(resolve => server.close(resolve)); rmSync(root, { recursive: true, force: true }); });
+  execFileSync('git', ['init', '--quiet'], { cwd: root });
+  const home = join(root, 'home'), state = join(root, 'machine');
+  mkdirSync(home, { recursive: true });
+  const env = { PATH: process.env.PATH, HOME: home, [HOME_ENV_NAME]: state, API_CONTEXT_DIR: root, API_BUDGET: '6000', API_FRICTION_OFF: '1', NO_COLOR: '1' };
+  const cli = args => spawnSync(process.execPath, [new URL('../bin/cli.mjs', import.meta.url).pathname, ...args], { cwd: root, env, encoding: 'utf8', timeout: 60_000 });
+  const added = cli(['stack', 'add', 'nocon', '--base-url', `http://127.0.0.1:${server.address().port}`]);
+  assert.equal(added.status, 0, added.stderr + added.stdout);
+  const fact = cli(['note', '--stack', 'nocon', '--scope', 'stack', 'Documented: the bot API answers ok true on success.']);
+  assert.equal(fact.status, 0, fact.stderr + fact.stdout);
+  const saved = saveSavedRequest(root, { kind: 'saved-request', format_version: 1, folder: 'nocon', name: 'getme', stack: 'nocon', environment: JSON.parse(readFileSync(join(root, LAYOUT.collection, 'nocon', 'stack.json'), 'utf8')).default_environment,
+    request: { method: 'GET', path: '/bot/{token}/getMe', bindings: { path: { token: { $input: 'path_token' } }, headers: { 'x-pin': { $input: 'pin' } } } },
+    inputs: { path_token: { type: 'string', sensitive: true }, pin: { type: 'string', source: { env: 'BOT_PIN' } } }, credentials: [] });
+  writeFileSync(join(root, LAYOUT.requests, 'nocon', 'damaged.json'), '{ not json');
+  const token = 'pathsecret-Zq5a-long', pin = 'Kx7Q';
+  assert.equal(token.length, 20);
+  const script = `const api=await import(${JSON.stringify(moduleUrl)}); console.log(JSON.stringify(await api.runSavedRequest(process.cwd(), ${JSON.stringify(saved.ref)}, { inputs: { path_token: ${JSON.stringify(token)} }, initiator: 'cli.saved' })));`;
+  // Asynchronous, so this process's loopback server can answer.
+  const run = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: root, env: { ...env, BOT_PIN: pin }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = ''; child.stdout.on('data', c => stdout += c); child.stderr.on('data', c => stderr += c);
+    const timer = setTimeout(() => child.kill(), 60_000);
+    child.once('error', reject); child.once('close', status => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const result = JSON.parse(run.stdout);
+  assert.equal(result.status, 200, run.stdout);
+  assert.deepEqual(seen, [`/bot/${token}/getMe`]);
+  assert.ok(!run.stdout.includes(token) && !run.stdout.includes(pin));
+  const files = [];
+  const walk = dir => { for (const entry of existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []) { const path = join(dir, entry.name); if (entry.isDirectory()) walk(path); else if (entry.isFile()) files.push(path); } };
+  walk(state); walk(home); walk(join(root, '.sannr'));
+  assert.ok(files.some(file => file.endsWith('usage.jsonl')), 'the usage log was written');
+  const row = readFileSync(files.find(file => file.endsWith('usage.jsonl')), 'utf8').trim().split('\n').map(line => JSON.parse(line)).find(r => r.runId === result.evidence);
+  assert.ok(row.knownNotes > 0, 'a stack fact was delivered on the row');
+  for (const file of files) for (const value of [token, pin]) assert.ok(!readFileSync(file, 'utf8').includes(value), `${file} holds a private value`);
+  const human = cli(['receipt']), machine = cli(['receipt', '--json']);
+  assert.equal(machine.status, 0, machine.stderr);
+  assert.ok(JSON.parse(machine.stdout).gotchas.operations.length > 0, 'the receipt lists the operation');
+  for (const output of [human.stdout, human.stderr, machine.stdout, machine.stderr]) for (const value of [token, pin]) assert.ok(!output.includes(value), 'the receipt prints a private value');
+});
+
+// A short private input is removed from a URL or absolute path that sits
+// inside a longer string (an operation name, a receipt line, a message), as it
+// is when the whole string is a URL or a path. Everything else in the string
+// is kept byte for byte.
+test('a short private input is removed from a URL or absolute path inside a longer string', () => {
+  const text = (inputs, value) => withPrivateRequestInputs(inputs, () => scrubForTest(value, []));
+  // An operation name: the method word, then the concrete path.
+  assert.equal(scrubWith(['7'], { knownOp: 'GET /bot/7/getMe' }, [], 'usage').knownOp, `GET /bot/${R}/getMe`);
+  assert.equal(scrubWith(['7'], { ok: true, known: { op: 'GET /bot/7/getMe' } }, [], 'envelope').known.op, `GET /bot/${R}/getMe`);
+  assert.equal(text(['7'], 'GET /bot/7/getMe'), `GET /bot/${R}/getMe`);
+  // A receipt or view line: trailing punctuation is not part of the last segment.
+  assert.deepEqual(scrubWith(['Kx3vP'], { line: 'GET /bot/Kx3vP/getMe: 2 notes delivered in 2 calls.' }),
+    { line: `GET /bot/${R}/getMe: 2 notes delivered in 2 calls.` });
+  // A message embedding a URL keeps its scheme, host and port.
+  assert.deepEqual(scrubWith(['7'], { message: 'The request to http://127.0.0.1:47980/bot/7/getMe failed.' }),
+    { message: `The request to http://127.0.0.1:47980/bot/${R}/getMe failed.` });
+  // Quoted and bracketed paths, and trailing punctuation.
+  const quoted = scrubWith(['7'], {
+    command: 'Do this now: sannr note "GET /bot/7/getMe" "<one sentence>"',
+    single: "see '/bot/7' and `/bot/7`", brackets: '[GET /bot/7/getMe] (/bot/7) </bot/7>; {/bot/7}',
+    drift: 'Redirect returned to /bot/7, which was already visited.', ends: 'at /bot/7. at /bot/7; at /bot/7: at /bot/7! at /bot/7),',
+  });
+  assert.deepEqual(quoted, {
+    command: `Do this now: sannr note "GET /bot/${R}/getMe" "<one sentence>"`,
+    single: `see '/bot/${R}' and \`/bot/${R}\``, brackets: `[GET /bot/${R}/getMe] (/bot/${R}) </bot/${R}>; {/bot/${R}}`,
+    drift: `Redirect returned to /bot/${R}, which was already visited.`, ends: `at /bot/${R}. at /bot/${R}; at /bot/${R}: at /bot/${R}! at /bot/${R}),`,
+  });
+  // Whole query values, as written and URL-decoded; the fragment is kept as in a whole URL.
+  assert.deepEqual(scrubWith(['7', 'a b'], { a: 'GET /orders?id=7&page=10 failed', b: 'GET /orders/7?ref=a%20b, then', c: 'saw http://h.test/x?q=7#7 twice' }),
+    { a: `GET /orders?id=${R}&page=10 failed`, b: `GET /orders/${R}?ref=${R}, then`, c: `saw http://h.test/x?q=${R}#7 twice` });
+  // Whitespace and the text around the path are kept byte for byte.
+  assert.equal(text(['7'], 'x  GET\t/bot/7/getMe\n2 calls, 7 notes.'), `x  GET\t/bot/${R}/getMe\n2 calls, 7 notes.`);
+});
+
+test('a short private input is not removed from dates, hosts, ports, words or templates inside a longer string', () => {
+  const kept = (inputs, value, structure) => assert.deepEqual(scrubWith(inputs, value, [], structure), value, inputs.join());
+  // Dates.
+  kept(['19', 'Nov', '2026', '02', '1'], { d: 'Thu, 19 Nov 2026 02:46:59 GMT', m: 'sent Thu, 19 Nov 2026 02:46:59 GMT to /v1/x', iso: 'at 2026-11-19T02:46:59.000Z', us: 'on 11/19/2026' });
+  // Hosts and ports, alone and inside a URL in a message.
+  kept(['1', '127', '0', '4730', '47980'], { a: 'connect to 127.0.0.1:4730 refused', b: 'The request to http://127.0.0.1:4730/v1/x failed.',
+    c: 'GET http://127.0.0.1:47980', d: 'host 127.0.0.1:4730/v1' });
+  // A word or a segment that contains the value without being it.
+  kept(['1', '7'], { a: 'GET /orders/a1b/x17', b: 'order 1 at /orders/11/x', c: 'and/or 7/8 a/7/b', d: 'GET /bot/7x/getMe: 17 notes' });
+  // A template whose segments contain the value as a substring.
+  kept(['der', 'Id', 'quot', 'rId}'], { knownOp: 'GET /orders/{orderId}/quote', line: 'GET /orders/{orderId}/quote: 2 notes delivered in 2 calls.' }, 'usage');
+  // What the client writes about the request itself is never altered by an input.
+  const record = { origin: { scope: { operation: 'GET /bot/7/getMe' } }, request: { method: 'GET', url: 'http://127.0.0.1:4731/bot/7/getMe' } };
+  const out = scrubWith(['7'], record, [], 'httpEvidence');
+  assert.deepEqual(out.origin, record.origin);
+  assert.equal(out.request.url, `http://127.0.0.1:4731/bot/${R}/getMe`);
+});
+
+// A response string that ends in many closing brackets is read in linear
+// time. The scrub runs in a child process that is stopped after a few seconds,
+// so a slow scan fails the test instead of stalling it.
+test('a short private input scrub stays fast on a path token ending in many closing brackets', () => {
+  const urls = { client: new URL('../lib/client.mjs', import.meta.url).href, inputs: new URL('../lib/request-private-inputs.mjs', import.meta.url).href };
+  const leaves = { parens: `/${')'.repeat(200_000)}`, mixed: `/${')]}'.repeat(70_000)}`, path: '/bot/7/getMe' };
+  const script = `const { scrubForTest } = await import(${JSON.stringify(urls.client)});
+    const { withPrivateRequestInputs } = await import(${JSON.stringify(urls.inputs)});
+    process.stdout.write(withPrivateRequestInputs(['7'], () => scrubForTest(${JSON.stringify(JSON.stringify(leaves))}, [], 'httpEvidence')));`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', timeout: 5_000, maxBuffer: 8 * 1024 * 1024 });
+  assert.equal(child.signal, null, 'the scrub did not finish within five seconds');
+  assert.equal(child.status, 0, child.stderr);
+  const out = JSON.parse(child.stdout);
+  assert.equal(out.path, `/bot/${R}/getMe`);
+  assert.equal(out.parens, leaves.parens);
+  assert.equal(out.mixed, leaves.mixed);
+});
+
+// On a stack with no bound contract the operation the client names is the
+// method and the concrete path. A short typed path value must leave it as it
+// leaves the row's path: in the usage row, the returned envelope, the receipt
+// and the view page.
+test('on a stack with no contract, a short typed path value is removed from the operation name everywhere it is shown', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'no-contract-short-')), seen = [];
+  const server = createServer((req, res) => { seen.push(req.url); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true })); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await new Promise(resolve => server.close(resolve)); rmSync(root, { recursive: true, force: true }); });
+  execFileSync('git', ['init', '--quiet'], { cwd: root });
+  const home = join(root, 'home'), state = join(root, 'machine');
+  mkdirSync(home, { recursive: true });
+  const env = { PATH: process.env.PATH, HOME: home, [HOME_ENV_NAME]: state, API_CONTEXT_DIR: root, API_BUDGET: '6000', API_FRICTION_OFF: '1', NO_COLOR: '1' };
+  const cli = args => spawnSync(process.execPath, [new URL('../bin/cli.mjs', import.meta.url).pathname, ...args], { cwd: root, env, encoding: 'utf8', timeout: 60_000 });
+  const added = cli(['stack', 'add', 'nocon', '--base-url', `http://127.0.0.1:${server.address().port}/v1`]);
+  assert.equal(added.status, 0, added.stderr + added.stdout);
+  const fact = cli(['note', '--stack', 'nocon', '--scope', 'stack', 'Documented: the bot API answers ok true on success.']);
+  assert.equal(fact.status, 0, fact.stderr + fact.stdout);
+  const saved = saveSavedRequest(root, { kind: 'saved-request', format_version: 1, folder: 'nocon', name: 'getme', stack: 'nocon',
+    environment: JSON.parse(readFileSync(join(root, LAYOUT.collection, 'nocon', 'stack.json'), 'utf8')).default_environment,
+    request: { method: 'GET', path: '/bot/{token}/getMe', bindings: { path: { token: { $input: 'token' } } } },
+    inputs: { token: { type: 'string', sensitive: true } }, credentials: [] });
+  writeFileSync(join(root, LAYOUT.requests, 'nocon', 'damaged.json'), '{ not json');
+  const run = token => new Promise((resolve, reject) => {
+    const script = `const api=await import(${JSON.stringify(moduleUrl)}); console.log(JSON.stringify(await api.runSavedRequest(process.cwd(), ${JSON.stringify(saved.ref)}, { inputs: { token: ${JSON.stringify(token)} }, initiator: 'cli.saved' })));`;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = ''; child.stdout.on('data', c => stdout += c); child.stderr.on('data', c => stderr += c);
+    const timer = setTimeout(() => child.kill(), 60_000);
+    child.once('error', reject); child.once('close', status => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+  });
+  const files = () => { const out = [];
+    const walk = dir => { for (const entry of existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []) { const path = join(dir, entry.name); if (entry.isDirectory()) walk(path); else if (entry.isFile()) out.push(path); } };
+    walk(state); walk(home); walk(join(root, '.sannr')); return out; };
+  const op = `GET /bot/${R}/getMe`;
+  // Five characters, and one character (an order id typed in the Request view).
+  for (const [token, shown] of [['Zq7kW', 'Zq7kW'], ['7', '/bot/7/']]) {
+    const child = await run(token);
+    assert.equal(child.status, 0, child.stderr);
+    const result = JSON.parse(child.stdout);
+    assert.equal(result.status, 200, child.stdout);
+    assert.equal(seen.at(-1), `/v1/bot/${token}/getMe`);
+    assert.equal(result.known?.op, op, token);
+    assert.ok(!child.stdout.includes(shown), `the returned envelope shows ${token}`);
+    const usage = files().find(file => file.endsWith('usage.jsonl'));
+    assert.ok(usage, 'the usage log was written');
+    const row = readFileSync(usage, 'utf8').trim().split('\n').map(line => JSON.parse(line)).find(r => r.runId === result.evidence);
+    assert.equal(row.knownOp, op, token);
+    assert.ok(row.knownNotes > 0, 'a stack fact was delivered on the row');
+    for (const file of files()) assert.ok(!readFileSync(file, 'utf8').includes(shown), `${file} shows ${token}`);
+  }
+  const machine = cli(['receipt', '--json']), human = cli(['receipt']);
+  assert.equal(machine.status, 0, machine.stderr);
+  assert.deepEqual(JSON.parse(machine.stdout).gotchas.operations.map(o => [o.op, o.requests]), [[op, 2]]);
+  assert.equal(human.status, 0, human.stderr);
+  const view = cli(['view']);
+  assert.equal(view.status, 0, view.stderr);
+  const page = readFileSync(join(root, LAYOUT.evidence, 'view', 'index.html'), 'utf8');
+  assert.ok(page.includes(op), 'the view page names the operation');
+  for (const output of [machine.stdout, human.stdout, human.stderr, view.stdout, view.stderr, page])
+    for (const shown of ['Zq7kW', '/bot/7/']) assert.ok(!output.includes(shown), `${shown} is shown`);
 });

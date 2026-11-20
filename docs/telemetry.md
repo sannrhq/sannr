@@ -75,10 +75,19 @@ as any of its rows.
   and Linux, a command whose standard error (for `connect`, standard output)
   is the null device (`2>/dev/null`, or a process started with its output
   discarded) neither prints nor records the notice; the next command whose
-  output can be read does. On Windows a stream sent to `NUL` is not
+  output can be read does. The same holds for `telemetry on` in a state
+  directory that has not been told, which prints the notice in its own
+  output on standard output: with that output on the null device, `on`
+  still turns telemetry on and lifts off as below, but records no notice,
+  so nothing is counted until the next command that can show the notice
+  prints it, and the 24 hours start then. A state directory turned off
+  before it was ever told, then turned on by `telemetry on` run with
+  another state directory, is told the same way by its next command. An
+  MCP server whose standard output is the null device answers nobody and
+  records no notice either. On Windows a stream sent to `NUL` is not
   detected, so the notice is recorded there as before. When the write to
-  standard error fails (for example a pipe whose reader has gone), the
-  record just made is removed, nothing is counted for that command, and the
+  standard error fails (for example a pipe whose reader has gone), what
+  was just recorded is undone, nothing is counted for that command, and the
   next command that can write prints the notice. The MCP server
   attaches no notice to a tool call made by `sannr mcp inspect --execute`,
   which keeps no result text, and records none; if a notice reaches the
@@ -224,7 +233,9 @@ Each command accepts `--json`.
   state directory, the next waits for the next UTC day. When there is no
   identifier yet, it says so and changes nothing.
 - `sannr telemetry on` removes the marker of its state directory, starts that
-  directory with a new identifier and no earlier counts, lifts the off
+  directory with a new identifier and no earlier counts (in a directory never
+  told, it prints the notice, recorded only where its output can be read; see
+  **Not before the notice**), lifts the off
   recorded in `~/.sannr`, and lifts the copies off put in the other recorded
   state directories. A state directory other than `~/.sannr` where
   `telemetry off` itself was run stays off until `telemetry on` is run with
