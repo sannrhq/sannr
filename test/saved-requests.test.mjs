@@ -766,26 +766,42 @@ test('a short private input scrub stays fast on a path token ending in many clos
   assert.equal(out.mixed, leaves.mixed);
 });
 
-// Malformed percent escapes at the client's 8 MB response cap, in text and as
-// one whole path or query, scrubbed as a stored record and as the returned
-// envelope. Each was many times slower than a realistic answer of the same
-// size; the child is stopped after a limit far above what the work takes.
-test('a short private input scrub stays fast on answers full of malformed percent escapes', () => {
+// Malformed percent escapes, in text and as one whole path or query, cost
+// about what a realistic answer of the same size does to scrub (a JSON
+// listing with URL fields, an HTML page of links), measured in one child
+// process with the same short input in scope. Each was once 15 to 50 times
+// the realistic answer. The best of three rounds is compared, so load on the
+// machine slows both sides alike; the child is stopped only if it hangs.
+test('answers full of malformed percent escapes cost about what a realistic answer of the same size does to scrub', t => {
   const urls = { client: new URL('../lib/client.mjs', import.meta.url).href, inputs: new URL('../lib/request-private-inputs.mjs', import.meta.url).href };
   const script = `const { scrubForTest } = await import(${JSON.stringify(urls.client)});
     const { withPrivateRequestInputs } = await import(${JSON.stringify(urls.inputs)});
-    const fill = unit => unit.repeat(Math.floor(8e6 / unit.length));
-    const leaves = { text: fill(' /%'), path: fill('/%'), queries: fill(' /a?b=%'), query: '/a?' + fill('b=%&'), sentinel: 'Cannot GET /bot/7/getMe' };
-    const kept = {};
-    for (const structure of ['httpEvidence', 'envelope']) {
-      const out = JSON.parse(withPrivateRequestInputs(['7'], () => scrubForTest(JSON.stringify(leaves), [], structure)));
-      for (const key of Object.keys(leaves)) kept[key] = out[key] === leaves[key] ? 'unchanged' : out[key].slice(0, 40);
+    const size = 2e6, fill = unit => unit.repeat(Math.floor(size / unit.length));
+    const items = []; for (let i = 0, n = 0; n < size; i++) { const item = { id: i, url: 'https://api.example.test/repos/o/r/issues/' + i,
+      comments_url: 'https://api.example.test/repos/o/r/issues/' + i + '/comments', body: 'See /docs/errors/' + (i % 9) + ' and (https://example.test/o/r/pull/' + i + ').' };
+      items.push(item); n += JSON.stringify(item).length; }
+    const realistic = { listing: JSON.stringify(items), page: fill('<li><a href="/docs/7/page">/docs/7/page</a> see (/x/7/y), "/q?id=7".</li>\\n') };
+    const malformed = { text: fill(' /%'), path: fill('/%'), queries: fill(' /a?b=%'), query: '/a?' + fill('b=%&') };
+    const bodies = { ...realistic, ...Object.fromEntries(Object.entries(malformed).map(([key, leaf]) => [key, JSON.stringify({ leaf })])) };
+    const best = {}, kept = {};
+    for (let round = 0; round < 3; round++) for (const [key, body] of Object.entries(bodies)) {
+      const started = process.hrtime.bigint();
+      const out = withPrivateRequestInputs(['7'], () => scrubForTest(body, [], 'httpEvidence'));
+      best[key] = Math.min(best[key] ?? Infinity, Number(process.hrtime.bigint() - started) / 1e6);
+      if (key in malformed) kept[key] = JSON.parse(out).leaf === malformed[key] ? 'unchanged' : 'changed';
     }
-    process.stdout.write(JSON.stringify(kept));`;
-  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', timeout: 15_000 });
-  assert.equal(child.signal, null, 'the scrub did not finish within fifteen seconds');
+    kept.sentinel = withPrivateRequestInputs(['7'], () => scrubForTest('Cannot GET /bot/7/getMe', []));
+    process.stdout.write(JSON.stringify({ best, kept }));`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', timeout: 180_000 });
+  assert.equal(child.signal, null, 'the child did not finish within three minutes');
   assert.equal(child.status, 0, child.stderr);
-  assert.deepEqual(JSON.parse(child.stdout), { text: 'unchanged', path: 'unchanged', queries: 'unchanged', query: 'unchanged', sentinel: `Cannot GET /bot/${R}/getMe` });
+  const { best, kept } = JSON.parse(child.stdout);
+  assert.deepEqual(kept, { text: 'unchanged', path: 'unchanged', queries: 'unchanged', query: 'unchanged', sentinel: `Cannot GET /bot/${R}/getMe` });
+  const realistic = Math.max(best.listing, best.page);
+  const ratios = Object.fromEntries(['text', 'path', 'queries', 'query'].map(key => [key, Math.round(best[key] / realistic * 100) / 100]));
+  t.diagnostic(`best of three, ms: ${JSON.stringify(Object.fromEntries(Object.entries(best).map(([key, ms]) => [key, Math.round(ms)])))}; ratio to the slower realistic answer: ${JSON.stringify(ratios)}`);
+  const [worst, ratio] = Object.entries(ratios).sort((a, b) => b[1] - a[1])[0];
+  assert.ok(ratio <= 8, `the costliest shape (${worst}) takes ${ratio} times as long as a realistic answer of the same size`);
 });
 
 // On a stack with no bound contract the operation the client names is the
