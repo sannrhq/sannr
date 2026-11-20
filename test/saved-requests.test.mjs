@@ -705,3 +705,65 @@ test('a short private input is not removed from dates, hosts, ports, words or te
   assert.deepEqual(out.origin, record.origin);
   assert.equal(out.request.url, `http://127.0.0.1:4731/bot/${R}/getMe`);
 });
+
+// On a stack with no bound contract the operation the client names is the
+// method and the concrete path. A short typed path value must leave it as it
+// leaves the row's path: in the usage row, the returned envelope, the receipt
+// and the view page.
+test('on a stack with no contract, a short typed path value is removed from the operation name everywhere it is shown', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'no-contract-short-')), seen = [];
+  const server = createServer((req, res) => { seen.push(req.url); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true })); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await new Promise(resolve => server.close(resolve)); rmSync(root, { recursive: true, force: true }); });
+  execFileSync('git', ['init', '--quiet'], { cwd: root });
+  const home = join(root, 'home'), state = join(root, 'machine');
+  mkdirSync(home, { recursive: true });
+  const env = { PATH: process.env.PATH, HOME: home, [HOME_ENV_NAME]: state, API_CONTEXT_DIR: root, API_BUDGET: '6000', API_FRICTION_OFF: '1', NO_COLOR: '1' };
+  const cli = args => spawnSync(process.execPath, [new URL('../bin/cli.mjs', import.meta.url).pathname, ...args], { cwd: root, env, encoding: 'utf8', timeout: 60_000 });
+  const added = cli(['stack', 'add', 'nocon', '--base-url', `http://127.0.0.1:${server.address().port}/v1`]);
+  assert.equal(added.status, 0, added.stderr + added.stdout);
+  const fact = cli(['note', '--stack', 'nocon', '--scope', 'stack', 'Documented: the bot API answers ok true on success.']);
+  assert.equal(fact.status, 0, fact.stderr + fact.stdout);
+  const saved = saveSavedRequest(root, { kind: 'saved-request', format_version: 1, folder: 'nocon', name: 'getme', stack: 'nocon',
+    environment: JSON.parse(readFileSync(join(root, LAYOUT.collection, 'nocon', 'stack.json'), 'utf8')).default_environment,
+    request: { method: 'GET', path: '/bot/{token}/getMe', bindings: { path: { token: { $input: 'token' } } } },
+    inputs: { token: { type: 'string', sensitive: true } }, credentials: [] });
+  writeFileSync(join(root, LAYOUT.requests, 'nocon', 'damaged.json'), '{ not json');
+  const run = token => new Promise((resolve, reject) => {
+    const script = `const api=await import(${JSON.stringify(moduleUrl)}); console.log(JSON.stringify(await api.runSavedRequest(process.cwd(), ${JSON.stringify(saved.ref)}, { inputs: { token: ${JSON.stringify(token)} }, initiator: 'cli.saved' })));`;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = ''; child.stdout.on('data', c => stdout += c); child.stderr.on('data', c => stderr += c);
+    const timer = setTimeout(() => child.kill(), 60_000);
+    child.once('error', reject); child.once('close', status => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+  });
+  const files = () => { const out = [];
+    const walk = dir => { for (const entry of existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []) { const path = join(dir, entry.name); if (entry.isDirectory()) walk(path); else if (entry.isFile()) out.push(path); } };
+    walk(state); walk(home); walk(join(root, '.sannr')); return out; };
+  const op = `GET /bot/${R}/getMe`;
+  // Five characters, and one character (an order id typed in the Request view).
+  for (const [token, shown] of [['Zq7kW', 'Zq7kW'], ['7', '/bot/7/']]) {
+    const child = await run(token);
+    assert.equal(child.status, 0, child.stderr);
+    const result = JSON.parse(child.stdout);
+    assert.equal(result.status, 200, child.stdout);
+    assert.equal(seen.at(-1), `/v1/bot/${token}/getMe`);
+    assert.equal(result.known?.op, op, token);
+    assert.ok(!child.stdout.includes(shown), `the returned envelope shows ${token}`);
+    const usage = files().find(file => file.endsWith('usage.jsonl'));
+    assert.ok(usage, 'the usage log was written');
+    const row = readFileSync(usage, 'utf8').trim().split('\n').map(line => JSON.parse(line)).find(r => r.runId === result.evidence);
+    assert.equal(row.knownOp, op, token);
+    assert.ok(row.knownNotes > 0, 'a stack fact was delivered on the row');
+    for (const file of files()) assert.ok(!readFileSync(file, 'utf8').includes(shown), `${file} shows ${token}`);
+  }
+  const machine = cli(['receipt', '--json']), human = cli(['receipt']);
+  assert.equal(machine.status, 0, machine.stderr);
+  assert.deepEqual(JSON.parse(machine.stdout).gotchas.operations.map(o => [o.op, o.requests]), [[op, 2]]);
+  assert.equal(human.status, 0, human.stderr);
+  const view = cli(['view']);
+  assert.equal(view.status, 0, view.stderr);
+  const page = readFileSync(join(root, LAYOUT.evidence, 'view', 'index.html'), 'utf8');
+  assert.ok(page.includes(op), 'the view page names the operation');
+  for (const output of [machine.stdout, human.stdout, human.stderr, view.stdout, view.stderr, page])
+    for (const shown of ['Zq7kW', '/bot/7/']) assert.ok(!output.includes(shown), `${shown} is shown`);
+});
