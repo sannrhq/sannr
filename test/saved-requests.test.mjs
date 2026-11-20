@@ -653,3 +653,55 @@ test('on a stack with no contract, a private path value never reaches the usage 
   assert.ok(JSON.parse(machine.stdout).gotchas.operations.length > 0, 'the receipt lists the operation');
   for (const output of [human.stdout, human.stderr, machine.stdout, machine.stderr]) for (const value of [token, pin]) assert.ok(!output.includes(value), 'the receipt prints a private value');
 });
+
+// A short private input is removed from a URL or absolute path that sits
+// inside a longer string (an operation name, a receipt line, a message), as it
+// is when the whole string is a URL or a path. Everything else in the string
+// is kept byte for byte.
+test('a short private input is removed from a URL or absolute path inside a longer string', () => {
+  const text = (inputs, value) => withPrivateRequestInputs(inputs, () => scrubForTest(value, []));
+  // An operation name: the method word, then the concrete path.
+  assert.equal(scrubWith(['7'], { knownOp: 'GET /bot/7/getMe' }, [], 'usage').knownOp, `GET /bot/${R}/getMe`);
+  assert.equal(scrubWith(['7'], { ok: true, known: { op: 'GET /bot/7/getMe' } }, [], 'envelope').known.op, `GET /bot/${R}/getMe`);
+  assert.equal(text(['7'], 'GET /bot/7/getMe'), `GET /bot/${R}/getMe`);
+  // A receipt or view line: trailing punctuation is not part of the last segment.
+  assert.deepEqual(scrubWith(['Kx3vP'], { line: 'GET /bot/Kx3vP/getMe: 2 notes delivered in 2 calls.' }),
+    { line: `GET /bot/${R}/getMe: 2 notes delivered in 2 calls.` });
+  // A message embedding a URL keeps its scheme, host and port.
+  assert.deepEqual(scrubWith(['7'], { message: 'The request to http://127.0.0.1:47980/bot/7/getMe failed.' }),
+    { message: `The request to http://127.0.0.1:47980/bot/${R}/getMe failed.` });
+  // Quoted and bracketed paths, and trailing punctuation.
+  const quoted = scrubWith(['7'], {
+    command: 'Do this now: sannr note "GET /bot/7/getMe" "<one sentence>"',
+    single: "see '/bot/7' and `/bot/7`", brackets: '[GET /bot/7/getMe] (/bot/7) </bot/7>; {/bot/7}',
+    drift: 'Redirect returned to /bot/7, which was already visited.', ends: 'at /bot/7. at /bot/7; at /bot/7: at /bot/7! at /bot/7),',
+  });
+  assert.deepEqual(quoted, {
+    command: `Do this now: sannr note "GET /bot/${R}/getMe" "<one sentence>"`,
+    single: `see '/bot/${R}' and \`/bot/${R}\``, brackets: `[GET /bot/${R}/getMe] (/bot/${R}) </bot/${R}>; {/bot/${R}}`,
+    drift: `Redirect returned to /bot/${R}, which was already visited.`, ends: `at /bot/${R}. at /bot/${R}; at /bot/${R}: at /bot/${R}! at /bot/${R}),`,
+  });
+  // Whole query values, as written and URL-decoded; the fragment is kept as in a whole URL.
+  assert.deepEqual(scrubWith(['7', 'a b'], { a: 'GET /orders?id=7&page=10 failed', b: 'GET /orders/7?ref=a%20b, then', c: 'saw http://h.test/x?q=7#7 twice' }),
+    { a: `GET /orders?id=${R}&page=10 failed`, b: `GET /orders/${R}?ref=${R}, then`, c: `saw http://h.test/x?q=${R}#7 twice` });
+  // Whitespace and the text around the path are kept byte for byte.
+  assert.equal(text(['7'], 'x  GET\t/bot/7/getMe\n2 calls, 7 notes.'), `x  GET\t/bot/${R}/getMe\n2 calls, 7 notes.`);
+});
+
+test('a short private input is not removed from dates, hosts, ports, words or templates inside a longer string', () => {
+  const kept = (inputs, value, structure) => assert.deepEqual(scrubWith(inputs, value, [], structure), value, inputs.join());
+  // Dates.
+  kept(['19', 'Nov', '2026', '02', '1'], { d: 'Thu, 19 Nov 2026 02:46:59 GMT', m: 'sent Thu, 19 Nov 2026 02:46:59 GMT to /v1/x', iso: 'at 2026-11-19T02:46:59.000Z', us: 'on 11/19/2026' });
+  // Hosts and ports, alone and inside a URL in a message.
+  kept(['1', '127', '0', '4730', '47980'], { a: 'connect to 127.0.0.1:4730 refused', b: 'The request to http://127.0.0.1:4730/v1/x failed.',
+    c: 'GET http://127.0.0.1:47980', d: 'host 127.0.0.1:4730/v1' });
+  // A word or a segment that contains the value without being it.
+  kept(['1', '7'], { a: 'GET /orders/a1b/x17', b: 'order 1 at /orders/11/x', c: 'and/or 7/8 a/7/b', d: 'GET /bot/7x/getMe: 17 notes' });
+  // A template whose segments contain the value as a substring.
+  kept(['der', 'Id', 'quot', 'rId}'], { knownOp: 'GET /orders/{orderId}/quote', line: 'GET /orders/{orderId}/quote: 2 notes delivered in 2 calls.' }, 'usage');
+  // What the client writes about the request itself is never altered by an input.
+  const record = { origin: { scope: { operation: 'GET /bot/7/getMe' } }, request: { method: 'GET', url: 'http://127.0.0.1:4731/bot/7/getMe' } };
+  const out = scrubWith(['7'], record, [], 'httpEvidence');
+  assert.deepEqual(out.origin, record.origin);
+  assert.equal(out.request.url, `http://127.0.0.1:4731/bot/${R}/getMe`);
+});
