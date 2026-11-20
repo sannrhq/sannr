@@ -706,6 +706,24 @@ test('a short private input is not removed from dates, hosts, ports, words or te
   assert.equal(out.request.url, `http://127.0.0.1:4731/bot/${R}/getMe`);
 });
 
+// A response string that ends in many closing brackets is read in linear
+// time. The scrub runs in a child process that is stopped after a few seconds,
+// so a slow scan fails the test instead of stalling it.
+test('a short private input scrub stays fast on a path token ending in many closing brackets', () => {
+  const urls = { client: new URL('../lib/client.mjs', import.meta.url).href, inputs: new URL('../lib/request-private-inputs.mjs', import.meta.url).href };
+  const leaves = { parens: `/${')'.repeat(200_000)}`, mixed: `/${')]}'.repeat(70_000)}`, path: '/bot/7/getMe' };
+  const script = `const { scrubForTest } = await import(${JSON.stringify(urls.client)});
+    const { withPrivateRequestInputs } = await import(${JSON.stringify(urls.inputs)});
+    process.stdout.write(withPrivateRequestInputs(['7'], () => scrubForTest(${JSON.stringify(JSON.stringify(leaves))}, [], 'httpEvidence')));`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', timeout: 5_000, maxBuffer: 8 * 1024 * 1024 });
+  assert.equal(child.signal, null, 'the scrub did not finish within five seconds');
+  assert.equal(child.status, 0, child.stderr);
+  const out = JSON.parse(child.stdout);
+  assert.equal(out.path, `/bot/${R}/getMe`);
+  assert.equal(out.parens, leaves.parens);
+  assert.equal(out.mixed, leaves.mixed);
+});
+
 // On a stack with no bound contract the operation the client names is the
 // method and the concrete path. A short typed path value must leave it as it
 // leaves the row's path: in the usage row, the returned envelope, the receipt
