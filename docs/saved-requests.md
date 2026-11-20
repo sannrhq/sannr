@@ -136,7 +136,11 @@ JSON-escaped and base64-encoded, never from inside a longer word. A path
 segment or query value counts whether the URL or absolute path is the whole
 string or sits inside a longer one, such as an operation name
 (`GET /bot/7/getMe` reads `GET /bot/[redacted]/getMe`), a receipt line or a
-message; the scheme, host, port and the rest of that string are kept. So an id
+message; the scheme, host, port and the rest of that string are kept. One
+case is not covered: inside a longer string, a value that ends in `.`, `!`,
+`'` or `)` and fills the last segment of the path (`GET /bot/Yd.`) is kept
+there, because that last character is read as punctuation after the path; the
+record's own request path still reads `[redacted]`. So an id
 such as `1` leaves the host, port and `Date` header of the record intact,
 while a field whose whole value is `1` (a header such as
 `x-ratelimit-remaining: 1`, a body field `"page": "1"`) still reads
