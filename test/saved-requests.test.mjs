@@ -13,9 +13,11 @@ import { saveSavedRequest, showSavedRequest, listSavedRequests, renameSavedReque
 import { readSavedRequestInputFile, resolveSavedRequestInputs } from '../lib/saved-request-inputs.mjs';
 import { savedRequestAction, savedActionFailure } from '../lib/saved-request-actions.mjs';
 import { inspectRecordedResponse } from '../lib/response-inspection.mjs';
-import { scrubForTest } from '../lib/client.mjs';
+import * as client from '../lib/client.mjs';
 import { withPrivateRequestInputs } from '../lib/request-private-inputs.mjs';
+import { detectFriction, frictionPrompt } from '../lib/friction.mjs';
 
+const { scrubForTest } = client;
 const moduleUrl = new URL('../lib/saved-requests.mjs', import.meta.url).href;
 const write = (file, value) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify(value)); };
 const document = () => ({ kind: 'saved-request', format_version: 1, folder: 'orders', name: 'lookup', stack: 'fixture', environment: 'local',
@@ -706,6 +708,30 @@ test('a short private input is not removed from dates, hosts, ports, words or te
   assert.equal(out.request.url, `http://127.0.0.1:4731/bot/${R}/getMe`);
 });
 
+// The strings the client builds around the concrete request path (the
+// operation name with no bound contract, the friction prompt's suggested note
+// command, the redirect-loop note) carry [redacted] from the moment they are
+// built. No scrub runs here, so the token scan cannot be what removes it.
+test('the operation name, the suggested note command and the redirect note are built with a short typed path value removed', () => {
+  const built = client.pathStringsForTest;
+  assert.ok(built, 'the client exposes the strings as it builds them');
+  for (const value of ['Yd.', 'Yp)', "Ya'", 'Yb!', 'Q7', 'Zq7kW']) withPrivateRequestInputs([value], () => {
+    const segment = encodeURIComponent(value);
+    assert.equal(built.operationName('GET', `/bot/${segment}`), `GET /bot/${R}`, value);
+    assert.equal(built.operationName('GET', `/bot/${segment}/getMe`), `GET /bot/${R}/getMe`, value);
+    const note = built.redirectLoopNote(`/v1/loop/${segment}`);
+    assert.ok(note.includes(`/v1/loop/${R}`) && !note.includes(`/loop/${segment}`), `${value}: ${note}`);
+    // The detector compares the concrete path with the usage log; the prompt names the operation without the value.
+    const request = built.frictionRequest(new URL(`http://127.0.0.1:4731/v1/bot/${segment}`), 'GET', 200), now = Date.now();
+    const rows = [400, 400].map((status, i) => ({ ts: new Date(now - 2000 + i * 1000).toISOString(), host: '127.0.0.1', method: 'GET', path: `/v1/bot/${segment}`, status }));
+    const prompt = frictionPrompt(detectFriction(request, { rows, now }));
+    for (const field of ['op', 'note', 'write_it'])
+      assert.ok(prompt[field].includes(`GET /v1/bot/${R}`) && !prompt[field].includes(`/bot/${segment}`), `${value} ${field}: ${prompt[field]}`);
+  });
+  // Outside a saved request's private inputs the strings name the path as it is.
+  assert.equal(built.operationName('GET', '/bot/Yd.'), 'GET /bot/Yd.');
+});
+
 // A response string that ends in many closing brackets is read in linear
 // time. The scrub runs in a child process that is stopped after a few seconds,
 // so a slow scan fails the test instead of stalling it.
@@ -746,9 +772,14 @@ test('on a stack with no contract, a short typed path value is removed from the 
     environment: JSON.parse(readFileSync(join(root, LAYOUT.collection, 'nocon', 'stack.json'), 'utf8')).default_environment,
     request: { method: 'GET', path: '/bot/{token}/getMe', bindings: { path: { token: { $input: 'token' } } } },
     inputs: { token: { type: 'string', sensitive: true } }, credentials: [] });
+  // The same value as the last segment of the path, where a value's own last character once mattered.
+  const last = saveSavedRequest(root, { kind: 'saved-request', format_version: 1, folder: 'nocon', name: 'bot', stack: 'nocon',
+    environment: JSON.parse(readFileSync(join(root, LAYOUT.collection, 'nocon', 'stack.json'), 'utf8')).default_environment,
+    request: { method: 'GET', path: '/bot/{token}', bindings: { path: { token: { $input: 'token' } } } },
+    inputs: { token: { type: 'string', sensitive: true } }, credentials: [] });
   writeFileSync(join(root, LAYOUT.requests, 'nocon', 'damaged.json'), '{ not json');
-  const run = token => new Promise((resolve, reject) => {
-    const script = `const api=await import(${JSON.stringify(moduleUrl)}); console.log(JSON.stringify(await api.runSavedRequest(process.cwd(), ${JSON.stringify(saved.ref)}, { inputs: { token: ${JSON.stringify(token)} }, initiator: 'cli.saved' })));`;
+  const run = (token, ref = saved.ref) => new Promise((resolve, reject) => {
+    const script = `const api=await import(${JSON.stringify(moduleUrl)}); console.log(JSON.stringify(await api.runSavedRequest(process.cwd(), ${JSON.stringify(ref)}, { inputs: { token: ${JSON.stringify(token)} }, initiator: 'cli.saved' })));`;
     const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = ''; child.stdout.on('data', c => stdout += c); child.stderr.on('data', c => stderr += c);
     const timer = setTimeout(() => child.kill(), 60_000);
@@ -757,31 +788,34 @@ test('on a stack with no contract, a short typed path value is removed from the 
   const files = () => { const out = [];
     const walk = dir => { for (const entry of existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []) { const path = join(dir, entry.name); if (entry.isDirectory()) walk(path); else if (entry.isFile()) out.push(path); } };
     walk(state); walk(home); walk(join(root, '.sannr')); return out; };
-  const op = `GET /bot/${R}/getMe`;
-  // Five characters, and one character (an order id typed in the Request view).
-  for (const [token, shown] of [['Zq7kW', 'Zq7kW'], ['7', '/bot/7/']]) {
-    const child = await run(token);
+  const op = `GET /bot/${R}/getMe`, lastOp = `GET /bot/${R}`;
+  // Five characters, one character (an order id typed in the Request view),
+  // and values ending in "." and ")" as the last segment.
+  for (const [token, shown, ref, path, expected] of [['Zq7kW', 'Zq7kW', saved.ref, '/bot/Zq7kW/getMe', op], ['7', '/bot/7/', saved.ref, '/bot/7/getMe', op],
+    ['Yd.', 'Yd.', last.ref, '/bot/Yd.', lastOp], ['Yp)', 'Yp)', last.ref, '/bot/Yp)', lastOp]]) {
+    const child = await run(token, ref);
     assert.equal(child.status, 0, child.stderr);
     const result = JSON.parse(child.stdout);
     assert.equal(result.status, 200, child.stdout);
-    assert.equal(seen.at(-1), `/v1/bot/${token}/getMe`);
-    assert.equal(result.known?.op, op, token);
+    assert.equal(seen.at(-1), `/v1${path}`);
+    assert.equal(result.known?.op, expected, token);
     assert.ok(!child.stdout.includes(shown), `the returned envelope shows ${token}`);
     const usage = files().find(file => file.endsWith('usage.jsonl'));
     assert.ok(usage, 'the usage log was written');
     const row = readFileSync(usage, 'utf8').trim().split('\n').map(line => JSON.parse(line)).find(r => r.runId === result.evidence);
-    assert.equal(row.knownOp, op, token);
+    assert.equal(row.knownOp, expected, token);
     assert.ok(row.knownNotes > 0, 'a stack fact was delivered on the row');
     for (const file of files()) assert.ok(!readFileSync(file, 'utf8').includes(shown), `${file} shows ${token}`);
   }
   const machine = cli(['receipt', '--json']), human = cli(['receipt']);
   assert.equal(machine.status, 0, machine.stderr);
-  assert.deepEqual(JSON.parse(machine.stdout).gotchas.operations.map(o => [o.op, o.requests]), [[op, 2]]);
+  assert.deepEqual(JSON.parse(machine.stdout).gotchas.operations.map(o => [o.op, o.requests]).sort(), [[lastOp, 2], [op, 2]]);
   assert.equal(human.status, 0, human.stderr);
   const view = cli(['view']);
   assert.equal(view.status, 0, view.stderr);
   const page = readFileSync(join(root, LAYOUT.evidence, 'view', 'index.html'), 'utf8');
-  assert.ok(page.includes(op), 'the view page names the operation');
+  assert.ok(page.includes(op) && page.includes(`${lastOp}:`), 'the view page names the operations');
   for (const output of [machine.stdout, human.stdout, human.stderr, view.stdout, view.stderr, page])
-    for (const shown of ['Zq7kW', '/bot/7/']) assert.ok(!output.includes(shown), `${shown} is shown`);
+    for (const shown of ['Zq7kW', '/bot/7/', 'Yd.', 'Yp)']) assert.ok(!output.includes(shown), `${shown} is shown`);
 });
+
