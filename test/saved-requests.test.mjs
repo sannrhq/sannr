@@ -708,6 +708,22 @@ test('a short private input is not removed from dates, hosts, ports, words or te
   assert.equal(out.request.url, `http://127.0.0.1:4731/bot/${R}/getMe`);
 });
 
+// Text an API returns is read for paths with trailing punctuation set aside.
+// A short value whose own last character is one of those marks still counts
+// where it fills the last segment or the last query value; the same value
+// without the mark is a different value, and the mark stays in the text.
+for (const mark of ['.', ',', ';', ':', '!', "'", ')', ']', '}']) {
+  test(`a short value ending in ${mark} is removed from the end of a path inside a longer string`, () => {
+    const value = `Yd${mark}`, text = (inputs, s) => withPrivateRequestInputs(inputs, () => scrubForTest(s, []));
+    assert.equal(text([value], `Cannot GET /bot/${value}`), `Cannot GET /bot/${R}`);
+    assert.equal(text([value], `Cannot GET /bot/${value}. Retry later.`), `Cannot GET /bot/${R}. Retry later.`);
+    assert.equal(text([value], `see http://127.0.0.1:47980/orders?page=2&id=${value}`), `see http://127.0.0.1:47980/orders?page=2&id=${R}`);
+    assert.deepEqual(scrubWith([value], { message: `Redirect returned to /v1/loop/${value}, which was already visited.` }),
+      { message: `Redirect returned to /v1/loop/${R}, which was already visited.` });
+    assert.equal(text(['Yd'], `Cannot GET /bot/Yd${mark}`), `Cannot GET /bot/${R}${mark}`);
+  });
+}
+
 // The strings the client builds around the concrete request path (the
 // operation name with no bound contract, the friction prompt's suggested note
 // command, the redirect-loop note) carry [redacted] from the moment they are
@@ -748,6 +764,28 @@ test('a short private input scrub stays fast on a path token ending in many clos
   assert.equal(out.path, `/bot/${R}/getMe`);
   assert.equal(out.parens, leaves.parens);
   assert.equal(out.mixed, leaves.mixed);
+});
+
+// Malformed percent escapes at the client's 8 MB response cap, in text and as
+// one whole path or query, scrubbed as a stored record and as the returned
+// envelope. Each was many times slower than a realistic answer of the same
+// size; the child is stopped after a limit far above what the work takes.
+test('a short private input scrub stays fast on answers full of malformed percent escapes', () => {
+  const urls = { client: new URL('../lib/client.mjs', import.meta.url).href, inputs: new URL('../lib/request-private-inputs.mjs', import.meta.url).href };
+  const script = `const { scrubForTest } = await import(${JSON.stringify(urls.client)});
+    const { withPrivateRequestInputs } = await import(${JSON.stringify(urls.inputs)});
+    const fill = unit => unit.repeat(Math.floor(8e6 / unit.length));
+    const leaves = { text: fill(' /%'), path: fill('/%'), queries: fill(' /a?b=%'), query: '/a?' + fill('b=%&'), sentinel: 'Cannot GET /bot/7/getMe' };
+    const kept = {};
+    for (const structure of ['httpEvidence', 'envelope']) {
+      const out = JSON.parse(withPrivateRequestInputs(['7'], () => scrubForTest(JSON.stringify(leaves), [], structure)));
+      for (const key of Object.keys(leaves)) kept[key] = out[key] === leaves[key] ? 'unchanged' : out[key].slice(0, 40);
+    }
+    process.stdout.write(JSON.stringify(kept));`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', timeout: 15_000 });
+  assert.equal(child.signal, null, 'the scrub did not finish within fifteen seconds');
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), { text: 'unchanged', path: 'unchanged', queries: 'unchanged', query: 'unchanged', sentinel: `Cannot GET /bot/${R}/getMe` });
 });
 
 // On a stack with no bound contract the operation the client names is the
@@ -819,3 +857,44 @@ test('on a stack with no contract, a short typed path value is removed from the 
     for (const shown of ['Zq7kW', '/bot/7/', 'Yd.', 'Yp)']) assert.ok(!output.includes(shown), `${shown} is shown`);
 });
 
+// A short typed value equal to a tag name leaves an HTML page as the API sent
+// it: a markup closing tag is not read as a path. A relative Link value has a
+// second "/" or a "?" (or a segment no tag name has) and is still read.
+test('a short typed value equal to a tag name leaves markup closing tags in a stored and returned page', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'markup-short-')), seen = [];
+  const page = '<ul><li><a href="/docs/start">Start</a></li></ul><p>Signed in.</p><b>ok</b >\n';
+  const server = createServer((req, res) => { seen.push(req.url); res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(page); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await new Promise(resolve => server.close(resolve)); rmSync(root, { recursive: true, force: true }); });
+  execFileSync('git', ['init', '--quiet'], { cwd: root });
+  const home = join(root, 'home'), state = join(root, 'machine');
+  mkdirSync(home, { recursive: true });
+  const env = { PATH: process.env.PATH, HOME: home, [HOME_ENV_NAME]: state, API_CONTEXT_DIR: root, API_BUDGET: '6000', API_FRICTION_OFF: '1', NO_COLOR: '1' };
+  const added = spawnSync(process.execPath, [new URL('../bin/cli.mjs', import.meta.url).pathname, 'stack', 'add', 'pages', '--base-url', `http://127.0.0.1:${server.address().port}/v1`], { cwd: root, env, encoding: 'utf8', timeout: 60_000 });
+  assert.equal(added.status, 0, added.stderr + added.stdout);
+  const saved = saveSavedRequest(root, { kind: 'saved-request', format_version: 1, folder: 'pages', name: 'page', stack: 'pages',
+    environment: JSON.parse(readFileSync(join(root, LAYOUT.collection, 'pages', 'stack.json'), 'utf8')).default_environment,
+    request: { method: 'GET', path: '/html/{token}', bindings: { path: { token: { $input: 'token' } } } },
+    inputs: { token: { type: 'string', sensitive: true } }, credentials: [] });
+  for (const token of ['p', 'li', 'b']) {
+    const script = `const api=await import(${JSON.stringify(moduleUrl)}); console.log(JSON.stringify(await api.runSavedRequest(process.cwd(), ${JSON.stringify(saved.ref)}, { inputs: { token: ${JSON.stringify(token)} }, initiator: 'cli.saved' })));`;
+    const child = await new Promise((resolve, reject) => {
+      const proc = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '', stderr = ''; proc.stdout.on('data', c => stdout += c); proc.stderr.on('data', c => stderr += c);
+      const timer = setTimeout(() => proc.kill(), 60_000);
+      proc.once('error', reject); proc.once('close', status => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+    });
+    assert.equal(child.status, 0, child.stderr);
+    const result = JSON.parse(child.stdout);
+    assert.equal(result.status, 200, child.stdout);
+    assert.equal(seen.at(-1), `/v1/html/${token}`);
+    const record = JSON.parse(readFileSync(join(root, LAYOUT.evidence, 'pages', `${result.evidence}.json`), 'utf8'));
+    assert.equal(record.response.body, page, `the stored page with ${token}`);
+    assert.equal(result.data, page, `the returned page with ${token}`);
+    assert.equal(record.request.url, `http://127.0.0.1:${server.address().port}/v1/html/${R}`);
+  }
+  const text = (value, s) => withPrivateRequestInputs([value], () => scrubForTest(s, []));
+  assert.equal(text('li', '<li>a</li\n>'), '<li>a</li\n>');
+  assert.equal(text('2', '</v1/items?page=2>; rel="next"'), `</v1/items?page=${R}>; rel="next"`);
+  assert.equal(text('7', '</7>; rel="next"'), `</${R}>; rel="next"`);
+});
