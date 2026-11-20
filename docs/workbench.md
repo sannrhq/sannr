@@ -264,8 +264,10 @@ reuse. Three columns, resized like the Workbench view's.
   is masked until you choose **Show**, and the page says beside the fields
   that a masked value is also removed from the recorded request and response:
   a value shorter than six characters only where it is a whole value (a JSON
-  field, a URL path segment, a query value or a header value), never from
-  inside a longer value; a longer value wherever it appears. So with an id of
+  field, a URL path segment, a query value or a header value; a path segment
+  or query value also where the path sits inside a longer string, such as an
+  operation name), never from inside a longer word; a longer value wherever
+  it appears. So with an id of
   `1` the host, port and `Date` header are kept, but a header or body field
   whose whole value is `1` still reads `[redacted]`. A field with an
   environment source (its box reads "From NAME unless entered") is a secret by
