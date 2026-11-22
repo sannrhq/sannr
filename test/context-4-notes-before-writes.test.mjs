@@ -70,8 +70,11 @@ async function fixture(t, { production = false } = {}) {
   createFixtureStack(root, { name: 'orders', baseUrl: `${origin}/orders-api`, contract: 'orders.openapi.json',
     ...(production ? { environmentConfig: { production: true } } : {}) });
   createFixtureStack(root, { name: 'billing', baseUrl: `${origin}/billing-api`, contract: 'billing.openapi.json' });
+  // An extra variable set to undefined is removed (API_BUDGET: undefined runs
+  // at the product's default budget).
+  const childEnv = extra => Object.fromEntries(Object.entries({ ...env, ...extra }).filter(([, value]) => value !== undefined));
   async function cli(args, extra = {}) {
-    const child = spawn(process.execPath, [CLI, ...args], { cwd: root, env: { ...env, ...extra }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [CLI, ...args], { cwd: root, env: childEnv(extra), stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = ''; child.stdout.on('data', b => stdout += b); child.stderr.on('data', b => stderr += b);
     const [code] = await once(child, 'close');
     let value; try { value = JSON.parse(stdout); } catch { try { value = JSON.parse(stderr.split('\n---')[0]); } catch { /* not JSON */ } }
@@ -84,10 +87,13 @@ async function fixture(t, { production = false } = {}) {
     await json('note', '--stack', 'orders', op, text, '--json');
   await json('note', '--stack', 'billing', 'POST /refunds', TEXT.refund, '--json');
   await json('note', '--stack', 'orders', 'POST /undeclared', 'An undeclared route the contract does not list. marker-orders-undeclared', '--json');
-  let session;
-  async function mcp(name, args) {
+  const sessions = new Map();
+  async function mcpWith(extra, name, args) {
+    const tag = JSON.stringify(Object.entries(extra));
+    let session = sessions.get(tag);
     if (!session) {
-      session = createMcpSession({ command: process.execPath, args: [SERVER], cwd: root, env, timeoutMs: 20000 });
+      session = createMcpSession({ command: process.execPath, args: [SERVER], cwd: root, env: childEnv(extra), timeoutMs: 20000 });
+      sessions.set(tag, session);
       t.after(() => session.close());
       await session.request('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'context-4-fixture', version: '1' } });
       await session.notify('notifications/initialized');
@@ -95,9 +101,12 @@ async function fixture(t, { production = false } = {}) {
     const reply = await session.request('tools/call', { name, arguments: args });
     return JSON.parse(reply.result.content[0].text);
   }
+  const mcp = (name, args) => mcpWith({}, name, args);
+  // The same MCP server at the product's default token budget.
+  const mcpDefault = (name, args) => mcpWith({ API_BUDGET: undefined }, name, args);
   const counted = () => seen.splice(0);
   const show = async op => json('show', '--stack', 'orders', op);
-  return { root, env, origin, cli, json, mcp, counted, show, git };
+  return { root, env, origin, cli, json, mcp, mcpDefault, counted, show, git };
 }
 const request = (f, args) => f.mcp(TOOL_NAME, { stack: 'orders', ...args });
 const noteRecord = (detail, text) => detail.note_projection.records.find(record => record.text === text);
@@ -498,15 +507,17 @@ test('CONTEXT-4 a hand-edited confirmation record is reported invalid and never 
   }
 });
 
-test('CONTEXT-4 confirming a retired note has its own refusal and suggests no confirmation', async t => {
+test('CONTEXT-4 confirming a retired note has its own refusal and writes nothing', async t => {
   const f = await fixture(t);
   const old = noteRecord(await f.show('PATCH /orders/{id}'), TEXT.patch);
   const retired = await f.cli(['note', '--stack', 'orders', 'PATCH /orders/{id}', 'The patch route was removed.', '--retires', old.id, '--reason', 'removed', '--json']);
   assert.equal(retired.code, 0, retired.stdout + retired.stderr);
+  const before = readFileSync(fixtureContextFile(f.root, 'orders'), 'utf8');
   const refused = await f.cli(['note', '--stack', 'orders', 'PATCH /orders/{id}', '--confirms', old.id, '--json']);
+  assert.notEqual(refused.code, 0);
   assert.equal(refused.value.refused, 'NOTE_CONFIRM_RETIRED');
   assert.equal(refused.value.replacement, undefined);
-  assert.ok(!refused.value.next.includes('--confirms'));
+  assert.equal(readFileSync(fixtureContextFile(f.root, 'orders'), 'utf8'), before, 'no confirmation is written');
 });
 
 test('CONTEXT-4 the legacy single-store layout holds a noted write exactly where known is delivered', async t => {
@@ -693,7 +704,19 @@ test('CONTEXT-4 without a contract, reading a template operation first gives the
   }
 });
 
-test('CONTEXT-4 an authored lesson saved on an operation\'s scoped context changes the digest and holds the write again', async t => {
+// Saves an authored lesson on the scoped context of a sent response, the way
+// `context capture` saves one (the identity is the response's own).
+let lessons = 0;
+async function saveLesson(f, stack, sent, text) {
+  const identity = sent.context_capture?.identity;
+  assert.ok(identity, JSON.stringify(sent.context_capture));
+  const file = `lesson-${++lessons}.json`;
+  writeFileSync(join(f.root, file), JSON.stringify({ identity, basis: 'authored', source: { tool: 'fixture-author' },
+    outcome: 'unknown', complete: false, notes: [text] }));
+  await f.json('context', 'capture', file, '--stack', stack);
+}
+
+test('CONTEXT-4 an authored lesson saved on an operation\'s scoped context leaves the digest as it was and is delivered in known', async t => {
   const f = await fixture(t);
   for (const [name, args] of [
     ['http', { method: 'POST', path: '/orders', body: {} }],
@@ -703,15 +726,172 @@ test('CONTEXT-4 an authored lesson saved on an operation\'s scoped context chang
     const digest = first.error.details.notes_digest;
     const sent = await request(f, { ...args, notes_digest: digest });
     assert.equal(sent.ok, true, `${name}: ${JSON.stringify(sent)}`);
-    const identity = sent.context_capture?.identity;
-    assert.ok(identity, `${name}: ${JSON.stringify(sent.context_capture)}`);
-    writeFileSync(join(f.root, `${name}-lesson.json`), JSON.stringify({ identity, basis: 'authored', source: { tool: 'fixture-author' },
-      outcome: 'unknown', complete: false, notes: [`A lesson about this ${name} call. marker-lesson-${name}`] }));
-    await f.json('context', 'capture', `${name}-lesson.json`, '--stack', 'orders');
-    const stale = await request(f, { ...args, notes_digest: digest });
-    assert.equal(stale.error?.code, 'NOTES_DIGEST_STALE', `${name}: ${JSON.stringify(stale.error)}`);
-    assert.match(JSON.stringify(stale.known), new RegExp(`marker-lesson-${name}`));
-    if (name === 'http') assert.equal((await f.mcp('api_note_context', { operation: 'POST /orders', stack: 'orders' })).notes_digest, stale.error.details.notes_digest);
+    await saveLesson(f, 'orders', sent, `A lesson about this ${name} call. marker-lesson-${name}`);
+    f.counted();
+    const again = await request(f, { ...args, notes_digest: digest });
+    assert.equal(again.ok, true, `${name}: ${JSON.stringify(again.error)}`);
+    assert.equal(f.counted().length, 1, name);
+    assert.match(JSON.stringify(again.known), new RegExp(`marker-lesson-${name}`));
+    if (name === 'http') assert.equal((await f.mcp('api_note_context', { operation: 'POST /orders', stack: 'orders' })).notes_digest, digest);
+  }
+});
+
+test('CONTEXT-4 an authored lesson alone holds no write and gives no digest, HTTP and JSON-RPC, six times in a row and at the default budget', async t => {
+  const f = await fixture(t);
+  for (const [name, args, operation, reached] of [
+    ['http', { method: 'POST', path: '/credits', body: {} }, 'POST /credits', 'POST /billing-api/credits'],
+    ['jsonrpc', { protocol: 'jsonrpc', path: '/rpc', rpc: { method: 'credits.issue' } }, 'credits.issue', 'POST /billing-api/rpc'],
+  ]) {
+    const call = (more = {}) => f.mcp(TOOL_NAME, { stack: 'billing', ...args, ...more });
+    const first = await call();
+    assert.equal(first.ok, true, `${name}: ${JSON.stringify(first.error)}`);
+    f.counted();
+    await saveLesson(f, 'billing', first, `A lesson about this ${name} call. marker-alone-${name}`);
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      const sent = await call();
+      assert.equal(sent.ok, true, `${name} write ${attempt}: ${JSON.stringify(sent.error)}`);
+      assert.deepEqual(f.counted(), [reached], `${name} write ${attempt}`);
+      if (attempt === 1) assert.match(JSON.stringify(sent.known), new RegExp(`marker-alone-${name}`), 'the lesson is still delivered');
+    }
+    assert.equal((await f.mcp('api_note_context', { operation, stack: 'billing' })).notes_digest ?? null, null, name);
+    const atDefault = await f.mcpDefault(TOOL_NAME, { stack: 'billing', ...args });
+    assert.equal(atDefault.ok, true, `${name} at the default budget: ${JSON.stringify(atDefault.error)}`);
+    assert.deepEqual(f.counted(), [reached]);
+  }
+  const shown = await f.cli(['show', '--stack', 'billing', 'POST /credits'], { API_BUDGET: undefined });
+  assert.equal(shown.value?.notes_digest ?? null, null);
+});
+
+test('CONTEXT-4 a note with lessons beside it keeps one digest for six writes in a row, a batch of two and the default budget', async t => {
+  const f = await fixture(t);
+  const digest = (await f.mcp('api_note_context', { operation: 'POST /refunds', stack: 'billing' })).notes_digest;
+  assert.match(digest, /^notes:v1:/);
+  const call = (more = {}) => f.mcp(TOOL_NAME, { stack: 'billing', method: 'POST', path: '/refunds', body: {}, ...more });
+  const first = await call({ notes_digest: digest });
+  assert.equal(first.ok, true, JSON.stringify(first.error));
+  await saveLesson(f, 'billing', first, 'A first lesson beside the refund note. marker-beside-1');
+  await saveLesson(f, 'billing', first, 'A second lesson beside the refund note. marker-beside-2');
+  f.counted();
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    const sent = await call({ notes_digest: digest });
+    assert.equal(sent.ok, true, `write ${attempt}: ${JSON.stringify(sent.error)}`);
+    assert.deepEqual(f.counted(), ['POST /billing-api/refunds'], `write ${attempt}`);
+  }
+  const batch = await f.mcp(TOOL_NAME, { stack: 'billing', requests: [
+    { id: 'one', method: 'POST', path: '/refunds', body: {}, notes_digest: digest },
+    { id: 'two', method: 'POST', path: '/refunds', body: {}, notes_digest: digest }] });
+  assert.equal(batch.ok, true, JSON.stringify(batch.error ?? batch.results?.map(row => row.error)));
+  assert.deepEqual(f.counted(), ['POST /billing-api/refunds', 'POST /billing-api/refunds']);
+  assert.equal((await f.mcp('api_note_context', { operation: 'POST /refunds', stack: 'billing' })).notes_digest, digest, 'the digest did not move');
+  // The default budget: the same digest from the hold, show and the lookup.
+  const held = await f.mcpDefault(TOOL_NAME, { stack: 'billing', method: 'POST', path: '/refunds', body: {} });
+  assert.equal(held.error?.code, 'WRITE_HELD_FOR_NOTES');
+  assert.equal(held.error.details.notes_digest, digest);
+  assert.equal((await f.cli(['show', '--stack', 'billing', 'POST /refunds'], { API_BUDGET: undefined })).value.notes_digest, digest);
+  assert.equal((await f.mcpDefault('api_note_context', { operation: 'POST /refunds', stack: 'billing' })).notes_digest, digest);
+  assert.deepEqual(f.counted(), []);
+  const sent = await f.mcpDefault(TOOL_NAME, { stack: 'billing', method: 'POST', path: '/refunds', body: {}, notes_digest: digest });
+  assert.equal(sent.ok, true, JSON.stringify(sent.error));
+  assert.deepEqual(f.counted(), ['POST /billing-api/refunds']);
+});
+
+test('CONTEXT-4 a stack fact with a lesson beside it holds a JSON-RPC call and an HTTP write six times under one digest, at the default budget too', async t => {
+  const f = await fixture(t);
+  for (const [name, args, reached] of [
+    ['http', { method: 'DELETE', path: '/orders/1' }, 'DELETE /orders-api/orders/1'],
+    ['jsonrpc', { protocol: 'jsonrpc', path: '/rpc', rpc: { method: 'orders.cancel' } }, 'POST /orders-api/rpc'],
+  ]) {
+    const digest = (await request(f, args)).error.details.notes_digest;
+    const sent = await request(f, { ...args, notes_digest: digest });
+    assert.equal(sent.ok, true, `${name}: ${JSON.stringify(sent.error)}`);
+    await saveLesson(f, 'orders', sent, `A lesson beside the stack fact for ${name}. marker-fact-lesson-${name}`);
+    f.counted();
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      const held = await request(f, args);
+      assert.equal(held.error?.code, 'WRITE_HELD_FOR_NOTES', `${name} attempt ${attempt}`);
+      assert.equal(held.error.details.notes_digest, digest, `${name} attempt ${attempt}`);
+      assert.deepEqual(f.counted(), [], `${name} attempt ${attempt}`);
+    }
+    const atDefault = await f.mcpDefault(TOOL_NAME, { stack: 'orders', ...args });
+    assert.equal(atDefault.error?.code, 'WRITE_HELD_FOR_NOTES', name);
+    assert.equal(atDefault.error.details.notes_digest, digest, name);
+    assert.deepEqual(f.counted(), []);
+    assert.equal((await request(f, { ...args, notes_digest: digest })).ok, true, name);
+    assert.deepEqual(f.counted(), [reached]);
+  }
+});
+
+test('CONTEXT-4 show prints no digest when its loose match lands on another saved operation, and a digest it prints sends that write', async t => {
+  const f = await fixture(t);
+  const exact = (await f.show('POST /orders')).notes_digest;
+  for (const [loose, op] of [['POST /Orders', 'POST /orders'], ['POST /undecl', 'POST /undeclared']]) {
+    const shown = await f.show(loose);
+    assert.equal(shown.op, op, loose);
+    assert.equal(shown.notes_digest ?? null, null, loose);
+    const human = await f.cli(['show', '--stack', 'orders', loose, '--human']);
+    assert.equal(human.code, 0, human.stdout + human.stderr);
+    assert.ok(!/notes:v1:/u.test(human.stdout), loose);
+  }
+  const held = await request(f, { method: 'POST', path: '/Orders', body: {} });
+  assert.equal(held.error?.code, 'WRITE_HELD_FOR_NOTES');
+  assert.notEqual(held.error.details.notes_digest, exact, 'the digest of POST /orders would have been refused');
+  f.counted();
+  for (const [spelling, path] of [['patch /orders/42', '/orders/42'], ['POST /orders', '/orders']]) {
+    const digest = (await f.show(spelling)).notes_digest;
+    assert.match(digest, /^notes:v1:/, spelling);
+    const sent = await request(f, { method: spelling.split(' ')[0].toUpperCase(), path, body: {}, notes_digest: digest });
+    assert.equal(sent.ok, true, `${spelling}: ${JSON.stringify(sent.error)}`);
+    assert.equal(f.counted().length, 1, spelling);
+  }
+});
+
+test('CONTEXT-4 a redirect refused inside a batch names its own step among the steps sent, and the destination\'s digest sends the write there', async t => {
+  const f = await fixture(t);
+  const legacy = (await request(f, { method: 'POST', path: '/legacy-orders', body: {} })).error.details.notes_digest;
+  const patch = (await f.mcp('api_note_context', { operation: 'PATCH /orders/{id}', stack: 'orders' })).notes_digest;
+  for (const steps of [
+    [{ id: 'legacy', method: 'POST', path: '/legacy-orders', body: {}, notes_digest: legacy }],
+    [{ id: 'patch', method: 'PATCH', path: '/orders/1', body: {}, notes_digest: patch },
+      { id: 'legacy', method: 'POST', path: '/legacy-orders', body: {}, notes_digest: legacy }],
+  ]) {
+    f.counted();
+    const result = await f.mcp(TOOL_NAME, { stack: 'orders', requests: steps });
+    assert.deepEqual(f.counted(), steps.map(step => `${step.method} /orders-api${step.path}`), 'each step reached the server once');
+    const refused = result.results.at(-1);
+    assert.equal(refused.error?.code, 'NOTES_HOLD_REDIRECT_REFUSED', JSON.stringify(refused));
+    assert.deepEqual(refused.error.details.sent_steps.map(step => step.id), steps.map(step => step.id));
+    assert.equal(refused.error.details.operation, 'POST /orders');
+    const there = await request(f, { method: 'POST', path: '/orders', body: {}, notes_digest: refused.error.details.notes_digest });
+    assert.equal(there.ok, true, JSON.stringify(there.error));
+    assert.deepEqual(f.counted(), ['POST /orders-api/orders']);
+  }
+});
+
+test('CONTEXT-4 a hand-edited operation key with a line break or a zero-width character reaches no output of the lookups or show --stack, and is counted', async t => {
+  const f = await fixture(t);
+  const file = fixtureContextFile(f.root, 'orders');
+  const store = JSON.parse(readFileSync(file, 'utf8'));
+  store.operations['POST /orders/​marker-key-zw'] = structuredClone(store.operations['POST /orders']);
+  store.operations['POST /orders/x\nmarker-key-nl'] = structuredClone(store.operations['POST /orders']);
+  writeFileSync(file, JSON.stringify(store));
+  const outputs = [];
+  const searched = await f.cli(['context', 'search', 'marker-orders-post', '--stack', 'orders']);
+  assert.equal(searched.code, 0, searched.stdout + searched.stderr);
+  assert.equal(searched.value.withheld_operations, 2);
+  assert.ok(searched.value.matches.some(match => match.operation === 'POST /orders'), 'the printable key is still found');
+  outputs.push(searched.stdout + searched.stderr);
+  const found = await f.mcp('api_note_context', { search: 'marker-orders-post' });
+  assert.equal(found.withheld_operations, 2);
+  outputs.push(JSON.stringify(found));
+  for (const format of [[], ['--human'], ['--history'], ['--human', '--history'], ['--json']]) {
+    const shown = await f.cli(['show', '--stack', 'orders', ...format]);
+    assert.equal(shown.code, 0, `${format}: ${shown.stdout}${shown.stderr}`);
+    outputs.push(shown.stdout + shown.stderr);
+  }
+  assert.equal((await f.cli(['show', '--stack', 'orders', '--json'])).value.withheld['operation-key'], 2);
+  for (const output of outputs) {
+    assert.ok(!output.includes('marker-key'), output.slice(0, 400));
+    assert.ok(!output.includes('​') && !output.includes('\\u200b'));
   }
 });
 

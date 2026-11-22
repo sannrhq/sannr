@@ -45,7 +45,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   request's short sensitive path value already removed. `api_note_context`
   and `show "<METHOD /path>"` return the same digest, so reading first avoids
   the refusal. A digest is refused again with `NOTES_DIGEST_STALE` after a
-  note is added, superseded, retired or given a new review decision. In a
+  note is added, superseded, retired or given a new review decision, and
+  only then: it is the same at every token budget and on every machine. An
+  authored lesson (`context capture`, `api_context_record`) holds no write
+  and is not part of the digest; it is still delivered in `known.scoped`. In a
   batch, nothing is sent before a hold the client can know before the batch
   runs: every such held step, protocol steps included, is listed once with its
   digest. A write step whose target depends on a value captured in the batch
@@ -56,7 +59,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   already sent named. A `method`, `path`, `stack`, `environment`, `upstream`,
   `protocol` or `notes_digest` that is not a string now refuses the call with
   `REQUEST_FIELD_INVALID` instead of being converted (a `path` of
-  `["/orders"]` used to be sent as `/orders`). Every existing refusal, the production
+  `["/orders"]` used to be sent as `/orders`). A `method` of `null` is now
+  read as absent, so a `GET` is sent (it used to fail with `TRANSPORT_FAILED`
+  and send nothing), and a batch step with no `path` now goes to the stack's
+  base URL (it used to go to `/undefined`). A write the server redirects to
+  another path on the same host is no longer followed when the destination
+  has saved notes or its stack has a stack fact (`NOTES_HOLD_REDIRECT_REFUSED`;
+  one request carries one digest, so send the write to the destination
+  instead); inside a batch the refusal counts that step among the steps sent.
+  Every existing refusal, the production
   write refusal included, still applies first. Saved suites, `verify`,
   `learn`, `doctor`, map probes and the Workbench Request view are not held.
   To turn the hold off, commit `"holdWritesForNotes": false` in

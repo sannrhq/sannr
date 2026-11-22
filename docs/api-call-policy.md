@@ -150,10 +150,12 @@ delivery: a write is held exactly when the `known` its response would carry
 holds a note or a stack fact. That includes a route the contract does not
 resolve (a path it does not list, another letter case, a parameter suffix),
 which still receives the facts that apply to every operation; its digest is
-keyed by the request's own method and path. Authored lessons saved on an
-operation's scoped context (`context capture` claims and `api_context_record`
-lessons, delivered in `known.scoped`) count too, for HTTP and protocol calls;
-they live in the committed store, so the digest is the same on every machine.
+keyed by the request's own method and path. What holds a write is the
+operation's active notes and its stack's applicable facts, and nothing else,
+for HTTP and protocol calls alike. An authored lesson (a `context capture`
+claim or an `api_context_record` lesson, delivered in `known.scoped` with the
+operation's most recent observations) holds nothing and is not part of the
+digest; save it as a note with `note` when a write should wait for it.
 The hold recognises the same write methods as the production guard (POST,
 PUT, PATCH, DELETE). The
 refusal is `kind: "policy"`, `code: "WRITE_HELD_FOR_NOTES"`, with the same
@@ -162,11 +164,15 @@ counts; note text is untrusted data) and `error.details.notes_digest`. Read
 the notes, then resend the same request with `notes_digest` set to that value
 (`--notes-digest <digest>` on the `request` and `saved run` commands). Reading first avoids the
 refused attempt: `api_note_context` for one operation and `show "<METHOD
-/path>"` return the same `notes_digest`.
+/path>"` return the same `notes_digest`. When `show` finds an operation only
+by a looser match (another letter case or part of a saved key) it names the
+operation it found and gives no digest.
 
-- The digest is computed from the saved note identities only. It changes when
-  an applicable note or fact is added, superseded or retired, not when a note
-  is confirmed, and it is the same on every machine for the same store.
+- The digest is computed from the saved note and fact identities only. It
+  changes when an applicable note or fact is added, superseded, retired or
+  given a new review decision, not when a note is confirmed or a response is
+  recorded, and it is the same at every token budget and on every machine for
+  the same store.
   Account facts and facts from granted providers appear in `known` but are
   neither part of the digest nor a reason to hold a write.
 - `NOTES_DIGEST_STALE`: the notes changed since the digest was issued; the
@@ -199,8 +205,8 @@ refused attempt: `api_note_context` for one operation and `show "<METHOD
     `grpc.messages`, `websocket.send`) and `expect`. A write step whose path
     depends on a value captured in the batch is not resolved before the batch
     runs. When the hold is on and a
-    stack it could reach has a stack fact, a note on an operation of that
-    method or an authored lesson, it is refused up front with
+    stack it could reach has a stack fact or a note on an operation of that
+    method, it is refused up front with
     `NOTES_TARGET_UNRESOLVED` and no digest unless it carries a
     `notes_digest`: read the notes for the operation it will reach and put
     that digest on the step, or send the step on its own. Environment
@@ -253,7 +259,9 @@ refused attempt: `api_note_context` for one operation and `show "<METHOD
   nothing, not even an OAuth token request, and records no observation.
 - A redirect that would carry the write to another operation with saved notes
   is not followed (`NOTES_HOLD_REDIRECT_REFUSED`) unless the digest is that
-  operation's.
+  operation's. Inside a batch the refusal counts its own step in
+  `sent_steps` (its request reached the server); send the write to the
+  destination with the digest the refusal gives.
 - Saved suites (`suite run`), `verify`, `learn`, `doctor`, map probes, imports
   and captures are not held: they run saved material with nobody reading in
   between. The Workbench's Request view is not held (a person sends it). One

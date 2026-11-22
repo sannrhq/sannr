@@ -564,7 +564,7 @@ test('a single store names where omitted noted operations are found, not a bare 
   assert.doesNotMatch(line, /show`/);
 });
 
-test('matches beyond the largest limit are counted and the answer says to narrow the query', async () => {
+test('matches beyond the largest limit are counted and a narrower query reaches them', async () => {
   const f = fixture();
   inFixtureStack(f.root, () => {
     for (let i = 0; i < 103; i++) saveContextNote(f.root, loadContextSnapshot(f.root), { operation: 'DELETE /orders/{id}', note: `Gadget rule ${i}.`,
@@ -574,7 +574,9 @@ test('matches beyond the largest limit are counted and the answer says to narrow
   assert.equal(value.total, 103);
   assert.equal(value.shown, 100);
   assert.equal(value.beyond_limit, 3);
-  assert.match(value.beyond_limit_meaning, /narrow/);
+  const narrow = (await search(f, 'gadget 102.')).value;
+  assert.deepEqual(narrow.matches.map(match => match.text), ['Gadget rule 102.']);
+  assert.equal(narrow.beyond_limit, undefined);
 });
 
 test('an operation identifier carrying a machine path or a credential shape is withheld from the index and counted', async () => {
@@ -653,16 +655,20 @@ test('a file with more than one hard link is refused at registration and at look
   assert.ok(!JSON.stringify(value).includes('marker-private'));
 });
 
-test('reference add and remove exit 1 when the block refresh fails, with reference wording', async () => {
+test('reference add and remove exit 1 when the block refresh fails, and the registry change is kept', async () => {
   const f = fixture();
   await run(f, ['connect', '--json']);
   writeFileSync(join(f.root, 'AGENTS.md'), `${read(f, 'AGENTS.md')}\n${POINTER_BEGIN}\n`);
+  const blocked = read(f, 'AGENTS.md');
+  const registered = () => JSON.parse(read(f, REFERENCES_FILE)).references.map(row => row.path);
   const added = await run(f, ['reference', 'add', RUNBOOK, '--title', 'Partner runbook'], { code: 1 });
   assert.equal(added.value.pointers.state, 'failed');
   assert.equal(added.value.pointers.failures[0].code, 'POINTER_CONFLICT');
-  assert.match(added.value.pointers.failures[0].next, /reference registry is saved/);
-  assert.doesNotMatch(added.value.pointers.failures[0].next, /stack change/);
+  assert.deepEqual(registered(), [RUNBOOK], 'the registry change is saved although the block was not refreshed');
+  assert.equal(read(f, 'AGENTS.md'), blocked, 'the conflicting file is left as it was');
   assert.equal((await run(f, ['reference', 'remove', RUNBOOK], { code: 1 })).value.pointers.state, 'failed');
+  assert.deepEqual(registered(), []);
+  assert.equal(read(f, 'AGENTS.md'), blocked);
 });
 
 test('a question in ordinary words falls back to notes holding some of its words, through the CLI and MCP', async () => {
@@ -838,11 +844,12 @@ test('removing an old block from a CLAUDE.md with CRLF line endings keeps CRLF',
   assert.ok(!/[^\r]\n/u.test(claude), 'every line ending is CRLF');
 });
 
-test('the hard-link refusal says what to do', async t => {
+test('a hard-linked reference is refused and nothing is registered', async t => {
   const f = fixture();
   try { linkSync(join(f.root, RUNBOOK), join(f.root, 'docs/hard-copy.md')); }
   catch (error) { t.skip(`Hard links cannot be made here (${error.code}).`); return; }
   const refused = await run(f, ['reference', 'add', 'docs/hard-copy.md', '--title', 'Hard'], { code: 1 });
   assert.equal(refused.error.code, 'REFERENCE_HARD_LINK');
-  assert.match(refused.error.message, /copy it|register the original/u);
+  assert.ok(!existsSync(join(f.root, REFERENCES_FILE)) || !read(f, REFERENCES_FILE).includes('hard-copy'),
+    'nothing is written to the registry');
 });

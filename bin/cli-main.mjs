@@ -75,7 +75,7 @@ import { safeOutputPath as inspectOutputPath, writeOutputFile } from '../lib/out
 import { auditMcpDeclarations } from "../lib/mcp-audit.mjs";
 import { resolveOutputPath } from "../lib/output-path.mjs";
 import { evidenceDirectory, retainViewModel, writeViewFile, secretOnPage } from "../lib/view-records.mjs";
-import { buildApiMapModel, renderApiMapHtml, renderApiMapText, apiMapSummary, selectContractFile } from "../lib/api-map.mjs";
+import { buildApiMapModel, renderApiMapHtml, renderApiMapText, apiMapSummary, selectContractFile, mergeWithheld } from "../lib/api-map.mjs";
 import { setupGuidance, setupReceipt, renderSetupReceipt } from "../lib/onboarding.mjs";
 import { installPointerSentence, doctorSummaryLine, renderDoctorZen } from "../lib/install-voice.mjs";
 import { doctorTargetUrl, queryDoctorObservation, recordDoctorObservation, renderDoctorObservation } from "../lib/doctor-observation.mjs";
@@ -94,7 +94,7 @@ import { noteConfirmationView, confirmationLine, typedNoteDates, writtenDate, NO
 import { loadNoteReadContext, reviewLaneSummary, reviewAuthorSummary } from '../lib/note-read-model.mjs';
 import { configuredHttpContracts, loadHttpContract, httpContractMountInfo } from '../lib/http-operation-context.mjs';
 import { showObservationSummary, observationConfidence } from '../lib/show-observations.mjs';
-import { planPointers, refreshNotePointers, stackRefreshLines, stackRefreshAdvice, inspectPointerFiles, pointerPathProblem, writableDestinationProblem, containsMachineLocalPath } from '../lib/note-pointers.mjs';
+import { planPointers, refreshNotePointers, stackRefreshLines, stackRefreshAdvice, inspectPointerFiles, pointerPathProblem, writableDestinationProblem, containsMachineLocalPath, printableOperationKey } from '../lib/note-pointers.mjs';
 import { stacksMigrationRequired } from '../lib/stack-migration-state.mjs';
 import { readDraftNote, markDraftNoteAccepted } from '../lib/draft-notes.mjs';
 import { stackEvidenceClasses, formatEvidenceClassCounts, evidenceClass, projectKnownNotes, rankNoteRecords } from '../lib/evidence-confidence.mjs';
@@ -3594,7 +3594,7 @@ function printCodeLocations(code) {
     console.log(`  ${key}: ${terminalText(location.file)}${location.line ? `:${location.line}` : ''}${state}`);
   }
 }
-async function printOperationDetail(detail, argv) {
+async function printOperationDetail(detail, argv, { digest: withDigest = true } = {}) {
   if (!detail.from && /^[A-Z]+ \//u.test(detail.op ?? '')) {
     detail = { ...detail, code: forOperationCode(repoRoot(), currentStackScope()?.stack, detail.op) };
     const { querySurvey } = await import('../lib/survey.mjs');
@@ -3607,8 +3607,11 @@ async function printOperationDetail(detail, argv) {
   }
   // The digest a write to this operation must name (null: nothing saved to
   // read, so a write is not held). The same value a held write's refusal and
-  // api_note_context return; local notes and stack facts only.
-  if (!detail.from && typeof detail.op === "string") {
+  // api_note_context return; local notes and stack facts only. A caller whose
+  // loose match landed on another operation than the name asked about passes
+  // digest: false, and none is printed.
+  if (!withDigest) detail = { ...detail, notes_digest: null };
+  else if (!detail.from && typeof detail.op === "string") {
     const { notesDigestFor } = await import("../lib/client.mjs");
     const digest = notesDigestFor({ stack: currentStackScope()?.stack, environment: currentStackScope()?.config.name, operation: detail.op });
     detail = { ...detail, notes_digest: digest };
@@ -3770,10 +3773,19 @@ async function cmdShow(argv) {
     // knowing an omitted operation's name. Reuse the map projection so its
     // inventory and observation counts cannot invent a second grading rule.
     const map = buildApiMapModel(root, { environment, learnedReasons: false });
-    const scoped = queryOperationContext(root, { stack: currentStackScope().stack }, { maxItems: 100, maxBytes: 1024 * 1024 });
+    const scopedRead = queryOperationContext(root, { stack: currentStackScope().stack }, { maxItems: 100, maxBytes: 1024 * 1024 });
+    // A stored operation key the instruction block withholds is withheld here
+    // too, in every format, and counted as the map counts a withheld key.
+    const unprintable = new Set();
+    const printable = op => { if (typeof op !== "string" || printableOperationKey(op)) return true; unprintable.add(op); return false; };
+    const scoped = { ...scopedRead,
+      operations: (scopedRead.operations ?? []).filter(record => printable(record?.identity?.operation)),
+      ...(scopedRead.note_context ? { note_context: { ...scopedRead.note_context,
+        records: (scopedRead.note_context.records ?? []).filter(record => printable(record?.operation)) } } : {}) };
+    const mapOperations = (map.operations ?? []).filter(row => printable(row.op));
     const evidence = stackEvidenceClasses(root, ctx ?? {}, { config: resolveConfig(root, environment ? { environment } : {}) });
     const noteRead = loadNoteReadContext(root, ctx);
-    const operations = (map.operations ?? []).map(row => {
+    const operations = mapOperations.map(row => {
       const grade = evidence.operations.get(row.op);
       return { ...row, ...(row.op && ctx?.operations?.[row.op]
         ? noteProjection(ctx.operations[row.op], row.op, { summary: grade?.summary, freshness: grade?.freshness, ...noteRead.forOperation(row.op) }) : { active_notes: [] }) };
@@ -3784,7 +3796,8 @@ async function cmdShow(argv) {
         responses: map.observations?.counted ?? 0, notes: map.counts?.notes ?? 0 },
       lanes: reviewLaneSummary(operations.flatMap(row => row.note_projection?.records ?? [])),
       authors: reviewAuthorSummary(operations.flatMap(row => row.note_projection?.records ?? [])),
-      operations, scoped, omissions: map.omissions ?? {}, withheld: map.withheld ?? {} };
+      operations, scoped, omissions: map.omissions ?? {},
+      withheld: unprintable.size ? mergeWithheld(map.withheld ?? {}, { "operation-key": unprintable.size }) : map.withheld ?? {} };
     Object.assign(report, typedNoteDates(report));
     if (argv.includes("--human")) {
       console.log(`Stack ${report.stack}: ${report.counts.operations} operations; ${formatEvidenceClassCounts(report.counts.evidence_classes)}; ${report.counts.responses} retained responses; ${report.counts.notes} authored notes.`);
@@ -3804,6 +3817,7 @@ async function cmdShow(argv) {
       for (const record of scoped.operations) for (const observation of record.observations)
         if (observation.basis === "authored") for (const note of observation.notes ?? [])
           console.log(`\n${terminalText(record.identity.operation)} — inherited authored guidance (${terminalText(record.identity.environment)}): ${terminalText(note)}`);
+      if (unprintable.size) console.log(`${unprintable.size} stored operation key${unprintable.size === 1 ? "" : "s"} not listed because the key is unsafe to repeat here; find ${unprintable.size === 1 ? "it" : "them"} in the knowledge file.`);
       for (const [kind, count] of Object.entries(scoped.omissions)) if (count) console.log(`Omitted ${kind}: ${count}. Inspect an exact operation with show --stack ${report.stack} "<METHOD /path>".`);
       for (const issue of scoped.issues) console.log(`Unavailable history: ${terminalText(issue.code)}.`);
     } else console.log(JSON.stringify(report, null, 1));
@@ -3820,15 +3834,24 @@ async function cmdShow(argv) {
   // An exact key first; then the saved operation a request to METHOD /path
   // reaches (the resolver the hold and api_note_context use); then a
   // substring of a saved key.
+  let resolverOperation;
   const resolvedKey = async () => {
     if (!/^[A-Za-z]+ \//u.test(wanted)) return undefined;
     const { resolveStoredOperation } = await import("../lib/client.mjs");
     const found = resolveStoredOperation({ stack: currentStackScope()?.stack, environment: environment ?? currentStackScope()?.config.name, operation: wanted }).operation;
+    resolverOperation = found ?? null;
     return found && keys.includes(found) ? found : undefined;
   };
   const key = keys.find((k) => k.toLowerCase() === wanted.toLowerCase())
     ?? await resolvedKey()
     ?? keys.find((k) => k.toLowerCase().includes(wanted.toLowerCase()));
+  // A digest is printed only for the operation the shared resolver gives for
+  // the name as typed (a name it does not resolve: only its exact key). A
+  // case-insensitive or substring match that lands on another saved
+  // operation still shows it, named, with no digest: a write to the name
+  // asked about may need another one.
+  if (key !== undefined && resolverOperation === undefined) await resolvedKey();
+  const digestApplies = resolverOperation ? key === resolverOperation : key === wanted;
   const fromTests = inspectImportedTestClaims(root, key ?? wanted, {
     bindings: importedClaimBindings(resolveConfig(root, environment ? { environment } : {})) });
   if (!key) {
@@ -3911,7 +3934,7 @@ async function cmdShow(argv) {
     // Show both without copying a response into a stronger legacy claim.
     scoped: queryOperationContext(root, { protocol: "http", operation: key }),
     ...(fromTests.claims.length ? { from_tests: fromTests } : {}),
-  }, argv);
+  }, argv, { digest: digestApplies });
 }
 
 // --- note ------------------------------------------------------------------
