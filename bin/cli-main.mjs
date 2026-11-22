@@ -17,7 +17,7 @@ import { createHash } from "node:crypto";
 import {
   CONTEXT_FILE as LEGACY_CONTEXT_FILE, MAX_CONTEXT_BYTES, readContract, operationsFrom, responseSchema, mapSourceFiles,
   sourceFileFor, emptyContext, loadContext, loadContextSnapshot, inspectContext,
-  saveContext, saveContextNote, acceptNoteHistory, inspectNoteHistory, baselineNoteHistory, indexOf,
+  saveContext, saveContextNote, confirmContextNote, acceptNoteHistory, inspectNoteHistory, baselineNoteHistory, indexOf,
   freshnessFor, learnFromResponse, promotionPreview, liveContractDigest,
   noOperationsReason, provenanceStamp, ageReason, activeNotes,
   recordReachabilityFailure, recordLearnFailure, mergeVerifiedEntry,
@@ -68,7 +68,9 @@ import { safeMcpValue } from "../lib/mcp-facts.mjs";
 import { renderMcpReport } from "../lib/mcp-report.mjs";
 import { inspectedToolFor, renderInlineMcp } from "../lib/mcp-delivery.mjs";
 import { blockText, blockCode, hasCommentMarkup, assertManagedBody, BLOCK_TEXT_MAX } from "../lib/block-text.mjs";
-import { registeredContextTools, renderInheritedLessons, renderStackContext } from "../lib/pointer-context.mjs";
+import { registeredContextTools } from "../lib/pointer-context.mjs";
+import { lookupTopic } from "../lib/topic-lookup.mjs";
+import { addReference, removeReference, loadReferences, REFERENCES_FILE, MAX_REFERENCE_BYTES } from "../lib/references.mjs";
 import { safeOutputPath as inspectOutputPath, writeOutputFile } from '../lib/output-path.mjs';
 import { auditMcpDeclarations } from "../lib/mcp-audit.mjs";
 import { resolveOutputPath } from "../lib/output-path.mjs";
@@ -88,6 +90,7 @@ import { importedClaimBindings, prepareImportedTestClaims, saveImportedTestClaim
 import { resolveNoteEvidence } from '../lib/note-evidence.mjs';
 import { noteBasisStamp, NOTE_BASIS_KINDS } from '../lib/note-basis.mjs';
 import { noteDataText, noteCorrectionConflicts, NOTE_DATA_MEANING, decorateNoteRecord } from '../lib/note-projection.mjs';
+import { noteConfirmationView, confirmationLine, typedNoteDates, writtenDate, NOTE_DATE_ISSUE } from '../lib/note-confirmations.mjs';
 import { loadNoteReadContext, reviewLaneSummary, reviewAuthorSummary } from '../lib/note-read-model.mjs';
 import { configuredHttpContracts, loadHttpContract, httpContractMountInfo } from '../lib/http-operation-context.mjs';
 import { showObservationSummary, observationConfidence } from '../lib/show-observations.mjs';
@@ -328,6 +331,78 @@ async function cmdProtocol(argv) {
   process.exitCode = result.ok ? 0 : 1;
 }
 
+// Registered reference files (lib/references.mjs). The registry holds paths,
+// titles and stacks, never file text; registering or removing one refreshes
+// managed blocks that already exist.
+function refreshReferencePointers(root) {
+  const saved = "The reference registry was saved";
+  const retry = `The reference registry is saved. Fix the named file, then run ${CLI_NAME} connect to refresh the managed instructions.`;
+  const catalog = stackCatalog(root);
+  let pointers;
+  if (!catalog.stacks.length) pointers = refreshNotePointers(root, retry, { saved, onlyWithBlock: true });
+  else {
+    const name = catalog.defaults.default_stack ?? catalog.stacks.map(row => row.name).sort()[0];
+    pointers = refreshStackPointers(root, () => stackScope(root, { stack: name }), saved);
+  }
+  if (pointers.state !== "failed") return pointers;
+  // The same advice the stack commands give, in reference wording.
+  return { ...pointers, retry, failures: pointers.failures.map(failure => ({ ...failure,
+    next: (failure.next ?? stackRefreshAdvice(failure, CLI_NAME)).replaceAll("the stack change is saved", "the reference registry is saved")
+      .replaceAll("The stack change is saved", "The reference registry is saved") })) };
+}
+function cmdReference(argv) {
+  const [, action, ...rest] = argv;
+  const usage = `Use: ${CLI_NAME} reference add <path> --title "<title>" [--stack <name>] | ${CLI_NAME} reference list | ${CLI_NAME} reference remove <path>`;
+  const positional = [], options = {};
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i];
+    if (arg === "--json") continue;
+    const match = /^--(title|stack)(?:=(.*))?$/su.exec(arg);
+    if (match) {
+      const value = match[2] ?? rest[++i];
+      if (value === undefined || options[match[1]] !== undefined) die("REFERENCE_ARGUMENTS_INVALID", `Provide --${match[1]} once with a value.`, usage);
+      options[match[1]] = value;
+    } else if (arg.startsWith("--")) die("REFERENCE_ARGUMENTS_INVALID", `Unknown reference flag.`, usage);
+    else positional.push(arg);
+  }
+  const root = repoRoot();
+  const refuse = error => {
+    const code = /^REFERENCE_[A-Z_]+$/u.test(error.code ?? "") ? error.code : "REFERENCE_FAILED";
+    console.error(JSON.stringify({ error: { code, message: code === "REFERENCE_FAILED" ? "The reference registry could not be changed." : error.message,
+      next: code === "REFERENCE_SECRET" ? "Remove the credential from the file, or register a different file. Nothing was registered." : usage } }, null, 1));
+    process.exit(["REFERENCE_SECRET", "REFERENCE_PATH_SECRET"].includes(code) ? 2 : 1);
+  };
+  if (action === "list") {
+    if (positional.length || Object.keys(options).length) die("REFERENCE_ARGUMENTS_INVALID", "reference list takes no arguments.", usage);
+    // Tolerant, so a person can see a bad entry and remove it by its path.
+    const registry = loadReferences(root, { tolerant: true });
+    console.log(JSON.stringify({ file: REFERENCES_FILE, references: registry.references,
+      ...(registry.problems.length ? { problems: registry.problems } : {}), max_bytes: MAX_REFERENCE_BYTES, requests_executed: 0 }, null, 1));
+    return;
+  }
+  if (action === "add") {
+    if (positional.length !== 1 || options.title === undefined) die("REFERENCE_ARGUMENTS_REQUIRED", "Provide one repository-relative path and --title.", usage);
+    let result;
+    try { result = addReference(root, { path: positional[0], title: options.title, stack: options.stack,
+      knownStacks: stackCatalog(root).stacks.map(row => row.name) }); }
+    catch (error) { refuse(error); }
+    const pointers = result.state === "unchanged" ? null : refreshReferencePointers(root);
+    console.log(JSON.stringify({ ...result, file: REFERENCES_FILE, ...(pointers ? { pointers } : {}), requests_executed: 0 }, null, 1));
+    if (pointers?.state === "failed") process.exitCode = 1;
+    return;
+  }
+  if (action === "remove") {
+    if (positional.length !== 1 || Object.keys(options).length) die("REFERENCE_ARGUMENTS_REQUIRED", "Provide the registered path to remove.", usage);
+    let result;
+    try { result = removeReference(root, positional[0]); } catch (error) { refuse(error); }
+    const pointers = refreshReferencePointers(root);
+    console.log(JSON.stringify({ ...result, file: REFERENCES_FILE, file_untouched: true, pointers, requests_executed: 0 }, null, 1));
+    if (pointers.state === "failed") process.exitCode = 1;
+    return;
+  }
+  die("REFERENCE_ACTION_UNKNOWN", "Choose reference add, list or remove.", usage);
+}
+
 function cmdContext(argv) {
   const [, action, file, ...extra] = argv;
   if (action === "query" && file === "--onboarding" && (!extra.length || extra.length === 1 && extra[0] === "--human")) {
@@ -337,6 +412,35 @@ function cmdContext(argv) {
     }
     catch (error) { die(error.code?.startsWith("ONBOARDING_") ? error.code : "ONBOARDING_OBSERVATION_INVALID",
       "The saved onboarding observation is unavailable or damaged.", "Review the local onboarding evidence; retrieval never sends a request."); }
+    return;
+  }
+  if (action === "search") {
+    // One lookup by topic over every saved note and registered reference. No
+    // operation, no request, no file written.
+    const rest = argv.slice(2);
+    const texts = [];
+    let stack, limit;
+    for (let i = 0; i < rest.length; i++) {
+      const arg = rest[i];
+      if (arg === "--json") continue;
+      if (arg === "--stack" || arg === "--limit") {
+        const value = rest[++i];
+        if (value === undefined || value.startsWith("--")) die("CONTEXT_ARGUMENTS_INVALID", `Provide ${arg} with a value.`, `Use: ${CLI_NAME} context search "<text>" [--stack <name>] [--limit <n>]`);
+        if (arg === "--stack") stack = value; else limit = /^\d+$/u.test(value) ? Number(value) : NaN;
+      } else if (arg.startsWith("--stack=")) stack = arg.slice(8);
+      else if (arg.startsWith("--limit=")) limit = /^\d+$/u.test(arg.slice(8)) ? Number(arg.slice(8)) : NaN;
+      else if (arg.startsWith("--")) die("CONTEXT_ARGUMENTS_INVALID", "context search accepts only --stack, --limit and --json.", `Use: ${CLI_NAME} context search "<text>" [--stack <name>] [--limit <n>]`);
+      else texts.push(arg);
+    }
+    if (texts.length !== 1) die("CONTEXT_ARGUMENTS_REQUIRED", "Provide the search text as one quoted argument.", `Use: ${CLI_NAME} context search "<text>" [--stack <name>]`);
+    let result;
+    try { result = typedNoteDates(lookupTopic(repoRoot(), { search: texts[0], stack, ...(limit !== undefined ? { limit } : {}), cli: CLI_NAME })); }
+    catch (error) {
+      const code = /^(?:TOPIC_|STACK_|REFERENCE_)[A-Z_]+$/u.test(error.code ?? "") ? error.code : "CONTEXT_SEARCH_FAILED";
+      die(code, code === "CONTEXT_SEARCH_FAILED" ? "The saved notes could not be searched." : error.message,
+        code === "STACK_NOT_FOUND" ? `List stacks with ${CLI_NAME} stacks.` : `Use: ${CLI_NAME} context search "<text>" [--stack <name>]`);
+    }
+    console.log(JSON.stringify(result, null, 1));
     return;
   }
   if (action === "keys") {
@@ -357,7 +461,7 @@ function cmdContext(argv) {
   }
   const commands = { capture: captureOperationContext, query: queryOperationContext, migrate: migrateOperationContext };
   if (action && !Object.hasOwn(commands, action))
-    die("CONTEXT_ACTION_UNKNOWN", "The context action is not supported.", `Use: ${CLI_NAME} context <capture|query|migrate> input.json, or ${CLI_NAME} context keys`);
+    die("CONTEXT_ACTION_UNKNOWN", "The context action is not supported.", `Use: ${CLI_NAME} context <capture|query|migrate> input.json, ${CLI_NAME} context search "<text>", or ${CLI_NAME} context keys`);
   if (!action || !file || extra.length)
     die("CONTEXT_ARGUMENTS_REQUIRED", "Provide a context action and one JSON input file.", `Use: ${CLI_NAME} context <capture|query|migrate> input.json`);
   const input = commandJsonInput(file);
@@ -722,14 +826,16 @@ function cmdInit(argv) {
 
 // Pointer blocks.
 //
-// AGENTS.md is the canonical instruction file. Existing CLAUDE.md files get
-// the same managed block; a new one is only an import bridge for older hosts.
+// AGENTS.md is the canonical instruction file. An existing CLAUDE.md gets the
+// same managed block unless it imports AGENTS.md (an exact `@AGENTS.md` line)
+// and AGENTS.md holds the block; a new one is only an import bridge.
 //
-// The split inside the block matters as much as the location. An agent will look
-// up an enum when it needs one; it will never look up "is anything weird about
-// this endpoint", because it does not know to ask. So gotchas are PUSHED into
-// the auto-loaded file, and everything else is PULLED from sannr.json when
-// there is an actual question.
+// The block says what saved knowledge exists and how to fetch it, never the
+// knowledge itself: which operations have notes (identifiers and counts), the
+// how many references are registered, and the retrieval paths. Notes arrive with the
+// request that needs them (`known`) or through one topic lookup
+// (`context search`, `api_note_context` with `search`), so every session does
+// not pay for every note, and the block asks for that lookup before advice.
 // POINTER_FILES is owned by lib/capabilities.mjs and imported above, so the
 // capabilities manifest and the code that writes these blocks name the SAME set.
 // The delimiters come from lib/brand.mjs, not from a literal here: unwire finds
@@ -3400,7 +3506,11 @@ function cmdRepos(argv) {
 
 function noteProjection(entry, operation, options = {}) {
   const projection = projectKnownNotes(entry, { ...options, operation });
-  for (const record of projection.history.records) Object.assign(record, decorateNoteRecord(record, { ...options, entry, history: projection.history }));
+  // Full records show when each note was written and last confirmed. The
+  // request envelope's known block is a separate projection and is unchanged.
+  const confirmation = record => noteConfirmationView(entry, record, { currentEvidence: options.reviewEvidenceFor });
+  for (const record of projection.history.records) Object.assign(record, decorateNoteRecord(record, { ...options, entry, history: projection.history }), { confirmation: confirmation(record) });
+  for (const record of projection.records ?? []) if (record?.id) record.confirmation = confirmation(record);
   return { active_notes: projection.notes, note_history: projection.history,
     note_projection: { meaning: NOTE_DATA_MEANING, records: projection.records,
       conflicts: noteCorrectionConflicts(entry, projection.history, { operation, stack: currentStackScope()?.stack }) } };
@@ -3452,7 +3562,8 @@ function stackFactDetail(ctx, { evidence, operation } = {}) {
     }
   }
   projection.note_projection.records = [...records.values()].map(record => ({ ...record.best,
-    contradictions: [...record.kinds], contradicted_operations: record.operations }));
+    contradictions: [...record.kinds], contradicted_operations: record.operations,
+    confirmation: noteConfirmationView(ctx.stack_facts, record.best) }));
   return { key: { kind: "stack" }, ...projection };
 }
 function printStackFacts(facts, argv) {
@@ -3466,6 +3577,7 @@ function printStackFacts(facts, argv) {
     const scope = operations === undefined ? "every operation" : validNoteOperations(operations) ? operations.map(terminalText).join(", ") : "invalid scope; review history";
     console.log(`  ${terminalText(note.text)}\n    ${note.id}; ${terminalText(note.provenance?.by ?? "unknown author")}; ${terminalText(note.provenance?.at ?? "unknown date")}; applies to: ${scope}${note.contradictions?.length ? `; conflicts with latest observation (${note.contradictions.join(", ")}) on ${note.contradicted_operations.map(terminalText).join(", ")}` : ""}`);
     printNoteReviewData(note);
+    if (note.confirmation) console.log(`    ${terminalText(confirmationLine(note.confirmation))}`);
     for (const reference of evidenceByNote.get(note.id) ?? []) printNoteEvidence(reference);
   }
   for (const issue of facts.note_history.issues) console.log(`  ${issue.code}: ${issue.message}`);
@@ -3493,8 +3605,19 @@ async function printOperationDetail(detail, argv) {
       detail.why = detail.why?.map(reason => String(reason).split(source).join('withheld'));
     }
   }
+  // The digest a write to this operation must name (null: nothing saved to
+  // read, so a write is not held). The same value a held write's refusal and
+  // api_note_context return; local notes and stack facts only.
+  if (!detail.from && typeof detail.op === "string") {
+    const { notesDigestFor } = await import("../lib/client.mjs");
+    const digest = notesDigestFor({ stack: currentStackScope()?.stack, environment: currentStackScope()?.config.name, operation: detail.op });
+    detail = { ...detail, notes_digest: digest };
+  }
+  // Every note record's dates are typed before any format prints them.
+  detail = typedNoteDates(detail);
   const history = detail.note_history;
   if (argv.includes("--human")) {
+    if (detail.notes_digest) console.log(`Notes digest for writes: ${detail.notes_digest}`);
     printStackFacts(detail.stack_facts, argv);
     printCodeLocations(detail.code);
     if (detail.survey) console.log(detail.survey.state === 'ready'
@@ -3529,14 +3652,14 @@ async function printOperationDetail(detail, argv) {
       // the loop put every run under whichever note happened to be last.
       const evidenceByNote = new Map(history.active.map(record => [record.id, record.provenance?.evidence ?? []]));
       for (const record of detail.note_projection?.records ?? history.active) {
-        console.log(`  ${record.id}\n    ${terminalText(record.text)}\n    ${record.provenance?.by ?? "unknown author"}; ${record.provenance?.at ?? "unknown date"}; ${record.evidence_class?.class ?? 'written'}${record.contradictions?.length ? `; conflicts with latest observation: ${record.contradictions.join(', ')}` : ''}${`\n    ${terminalText(noteDataText(record))}`}`);
+        console.log(`  ${record.id}\n    ${terminalText(record.text)}\n    ${record.provenance?.by ?? "unknown author"}; ${record.provenance?.at ?? "unknown date"}; ${record.evidence_class?.class ?? 'written'}${record.contradictions?.length ? `; conflicts with latest observation: ${record.contradictions.join(', ')}` : ''}${`\n    ${terminalText(noteDataText(record))}`}${record.confirmation ? `\n    ${terminalText(confirmationLine(record.confirmation))}` : ''}`);
         for (const reference of evidenceByNote.get(record.id) ?? []) printNoteEvidence(reference);
       }
       printNoteConflicts(detail.note_projection);
       if (!history.active.length) console.log("  No active notes.");
       if (argv.includes("--history")) {
         console.log("Superseded history (retained claims):");
-        for (const record of history.history) console.log(`  ${record.id}\n    ${record.text}\n    ${record.provenance?.by ?? "unknown author"}; ${record.provenance?.at ?? "unknown date"}\n    ${JSON.stringify(record.superseded)}`);
+        for (const record of history.history) console.log(`  ${record.id}\n    ${record.text}\n    ${record.provenance?.by ?? "unknown author"}; ${record.provenance?.at ?? "unknown date"}\n    ${JSON.stringify(record.superseded)}${record.confirmation ? `\n    ${terminalText(confirmationLine(record.confirmation))}` : ''}`);
         if (!history.history.length) console.log("  No superseded notes.");
       } else if (history.history.length) console.log(`  ${history.history.length} superseded note(s); use --history to read them.`);
     }
@@ -3572,7 +3695,7 @@ function showAccountFacts(argv) {
       }
     } else die("SHOW_OPTION_INVALID", "Account facts use --scope account, --env, --human, --history or --json; they do not take an operation.");
   }
-  const projection = readAccountFacts(repoRoot(), { scope, history: argv.includes("--history"), maxFacts: 100 });
+  const projection = typedNoteDates(readAccountFacts(repoRoot(), { scope, history: argv.includes("--history"), maxFacts: 100 }));
   const report = { stack: scope.stack, environment: scope.config.name, scope: "account", ...projection };
   if (argv.includes("--human")) {
     console.log(`Account facts: ${terminalText(scope.stack)} / ${terminalText(scope.config.name)}. Authored account guidance, not API-wide truth.`);
@@ -3588,6 +3711,29 @@ function showAccountFacts(argv) {
     for (const issue of projection.issues ?? []) console.log(`  ${terminalText(issue.code ?? issue)}: account history or confirmation needs attention.`);
   } else console.log(JSON.stringify(report, null, 1));
   if (projection.issues?.length) process.exitCode = 1;
+}
+
+// A stored operation entry as show prints it: every saved field except the
+// stored confirmation map, which is unprotected by any digest and reaches
+// output only through the validated view on each note record.
+// Its note dates are typed as every note output types them: a stored date
+// not in the form Sannr writes is printed as null, and the entry carries the
+// invalid-history issue.
+function storedEntryView(entry) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+  const { note_confirmations: _stored, ...rest } = entry;
+  let invalid = false;
+  const date = value => { if (value === undefined || value === null || writtenDate(value) !== null) return value; invalid = true; return null; };
+  if (Array.isArray(rest.notes_provenance)) rest.notes_provenance = rest.notes_provenance.map(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+    const typed = typedNoteDates({ provenance: item });
+    if (typed.history_issue) invalid = true;
+    return typed.provenance;
+  });
+  if (Object.hasOwn(rest, "noted_at")) rest.noted_at = date(rest.noted_at);
+  if (Array.isArray(rest.note_replacements)) rest.note_replacements = rest.note_replacements.map(item =>
+    item && typeof item === "object" && !Array.isArray(item) && Object.hasOwn(item, "at") ? { ...item, at: date(item.at) } : item);
+  return invalid ? { ...rest, history_issue: NOTE_DATE_ISSUE } : rest;
 }
 
 async function cmdShow(argv) {
@@ -3639,6 +3785,7 @@ async function cmdShow(argv) {
       lanes: reviewLaneSummary(operations.flatMap(row => row.note_projection?.records ?? [])),
       authors: reviewAuthorSummary(operations.flatMap(row => row.note_projection?.records ?? [])),
       operations, scoped, omissions: map.omissions ?? {}, withheld: map.withheld ?? {} };
+    Object.assign(report, typedNoteDates(report));
     if (argv.includes("--human")) {
       console.log(`Stack ${report.stack}: ${report.counts.operations} operations; ${formatEvidenceClassCounts(report.counts.evidence_classes)}; ${report.counts.responses} retained responses; ${report.counts.notes} authored notes.`);
       console.log(report.meaning);
@@ -3670,7 +3817,17 @@ async function cmdShow(argv) {
     `Qualify the tool with its registration label: ${CLI_NAME} show "<label>/<tool>"`);
   if (inspected) { console.log(JSON.stringify(inspected, null, 1)); return; }
   const keys = ctx ? Object.keys(ctx.operations) : [];
+  // An exact key first; then the saved operation a request to METHOD /path
+  // reaches (the resolver the hold and api_note_context use); then a
+  // substring of a saved key.
+  const resolvedKey = async () => {
+    if (!/^[A-Za-z]+ \//u.test(wanted)) return undefined;
+    const { resolveStoredOperation } = await import("../lib/client.mjs");
+    const found = resolveStoredOperation({ stack: currentStackScope()?.stack, environment: environment ?? currentStackScope()?.config.name, operation: wanted }).operation;
+    return found && keys.includes(found) ? found : undefined;
+  };
   const key = keys.find((k) => k.toLowerCase() === wanted.toLowerCase())
+    ?? await resolvedKey()
     ?? keys.find((k) => k.toLowerCase().includes(wanted.toLowerCase()));
   const fromTests = inspectImportedTestClaims(root, key ?? wanted, {
     bindings: importedClaimBindings(resolveConfig(root, environment ? { environment } : {})) });
@@ -3699,7 +3856,7 @@ async function cmdShow(argv) {
         from: { repo: hit.provider.name, root: hit.provider.root },
         why: age?.stale ? [...reasons, `BUT ${ageLine}`] : reasons,
         ...(age ? { age } : {}),
-        ...hit.entry,
+        ...storedEntryView(hit.entry),
         ...showObservationProjection(root, hit.key, { configRoot: hit.provider.root, environment, legacyConfidence: confidence, entry: hit.entry, ctx: hit.ctx }),
         // Query from the consumer so only its current grants apply. A provider
         // may itself have grants that this consumer is not allowed to inherit.
@@ -3748,7 +3905,7 @@ async function cmdShow(argv) {
     ...(ctx?.stack_facts !== undefined ? { stack_facts: stackFactDetail(ctx, { evidence: stackEvidenceClasses(root, ctx, { config: resolveConfig(root, environment ? { environment } : {}) }), operation: key }) } : {}), op: key,
     why: age?.stale ? [...reasons, `BUT ${ageLine}`] : reasons,
     ...(age ? { age } : {}),
-    ...ctx.operations[key],
+    ...storedEntryView(ctx.operations[key]),
     ...showObservationProjection(root, key, { environment, legacyConfidence: confidence, entry: ctx.operations[key], ctx }),
     // Legacy verification and scoped client observations are separate records.
     // Show both without copying a response into a stronger legacy claim.
@@ -3776,7 +3933,7 @@ async function cmdShow(argv) {
 function noteArguments(argv) {
   argv = argv.filter(value => value !== "--json");
   const words = [], evidence = [], operations = [];
-  let supersedes, retires, reason, by, actor, basis, source, alongside = false, scope = "operation", scoped = false, shared = false, environment;
+  let supersedes, retires, reason, by, actor, basis, source, confirms, alongside = false, scope = "operation", scoped = false, shared = false, environment;
   for (let index = 1; index < argv.length; index++) {
     const value = argv[index];
     if (value === "--shared") {
@@ -3797,6 +3954,11 @@ function noteArguments(argv) {
       if (value === '--reason') { if (reason !== undefined) noteRefusal(noteReviewFailure(reviewError('NOTE_RETIRE_INVALID'))); reason = argument; }
       if (value === '--by') { if (by !== undefined) noteRefusal(noteReviewFailure(reviewError('NOTE_REVIEW_BY_REQUIRED'))); by = argument; }
       if (value === '--actor') { if (actor !== undefined) noteRefusal(noteReviewFailure(reviewError('NOTE_REVIEW_ACTOR_REQUIRED'))); actor = argument; }
+    } else if (value === "--confirms") {
+      const argument = argv[++index];
+      if (confirms !== undefined || !/^sha256:[a-f0-9]{64}$/.test(argument ?? ""))
+        noteArgumentError("NOTE_OPTION_INVALID", "--confirms needs one full note id (sha256:<64 hex>) and may appear once.");
+      confirms = argument;
     } else if (value === '--basis' || value === '--source') {
       const argument = argv[++index];
       if (!argument || argument.startsWith('--') || (value === '--basis' ? basis : source) !== undefined)
@@ -3816,16 +3978,18 @@ function noteArguments(argv) {
         if (supersedes) noteArgumentError("NOTE_OPTION_INVALID", "Provide --supersedes once.");
         supersedes = argument;
       }
-    } else if (value.startsWith("--")) noteArgumentError("NOTE_OPTION_INVALID", "Unknown note option.", "Use --scope stack or account, --operations, --shared, --supersedes, --alongside, --evidence or --json.");
+    } else if (value.startsWith("--")) noteArgumentError("NOTE_OPTION_INVALID", "Unknown note option.", "Use --scope stack or account, --operations, --shared, --supersedes, --alongside, --confirms, --evidence or --json.");
     else words.push(value);
   }
   if (supersedes && alongside) noteArgumentError("NOTE_OPTION_INVALID", "Choose --supersedes or --alongside, not both.");
   if (retires !== undefined && (supersedes || alongside || scope !== 'operation') || reason !== undefined && retires === undefined)
     noteRefusal(noteReviewFailure(reviewError('NOTE_RETIRE_INVALID')));
+  if (confirms !== undefined && (supersedes || alongside || retires !== undefined || operations.length || scope === "account"))
+    noteArgumentError("NOTE_OPTION_INVALID", "--confirms names one saved note; it takes no relationship, --operations or account scope.");
   if (operations.length && scope !== "stack") noteArgumentError("NOTE_OPTION_INVALID", "--operations requires --scope stack.");
   if (shared && scope !== "account") noteArgumentError("NOTE_OPTION_INVALID", "--shared requires --scope account.");
   const op = scope === "operation" ? words.shift() : undefined;
-  return { op, scope, operations, shared, text: words.join(" ").trim(), evidence, retires, reason, by, actor, basis, source,
+  return { op, scope, operations, shared, text: words.join(" ").trim(), evidence, retires, reason, by, actor, basis, source, confirms,
     relation: supersedes ? { supersedes } : alongside ? { alongside: true } : undefined };
 }
 
@@ -3900,11 +4064,13 @@ function draftNoteArguments(root, argv) {
   return { argv: expanded, draft, textDigest };
 }
 
-function cmdNote(argv) {
+async function cmdNote(argv) {
   const migration = stacksMigrationRequired(repoRoot());
   if (migration) noteRefusal({ refused: migration.code, reason: migration.message, next: migration.command });
   const acceptance = draftNoteArguments(repoRoot(), argv);
-  const { op, scope, operations, shared, text, relation, evidence, retires, reason, by, actor, basis, source } = noteArguments(acceptance.argv);
+  const { op, scope, operations, shared, text, relation, evidence, retires, reason, by, actor, basis, source, confirms } = noteArguments(acceptance.argv);
+  if (confirms !== undefined && (text || acceptance.draft || basis !== undefined || source !== undefined))
+    noteArgumentError("NOTE_OPTION_INVALID", "--confirms takes no note text, draft or basis; it re-dates the saved note.", `Use: ${CLI_NAME} note "<METHOD /path>" --confirms <note-id> [--evidence <run-id>]`);
   let basisStamp;
   try { basisStamp = noteBasisStamp(basis, source); }
   catch (error) { noteRefusal({ refused: error.code, reason: error.message }, error.code === 'SECRET_IN_NOTE' ? 2 : 3); }
@@ -3924,7 +4090,7 @@ function cmdNote(argv) {
   }
   const noteKey = scope === "stack" ? { kind: "stack" } : { kind: "operation", op };
   if (scope !== "operation" && !currentStackScope()) noteArgumentError("STACK_REQUIRED", "Choose a stack for its facts with --stack <name>.");
-  if ((scope === "operation" && !op) || !text) {
+  if ((scope === "operation" && !op) || (!text && confirms === undefined)) {
     noteArgumentError("NOTE_ARGUMENTS_REQUIRED", "Provide an operation and note.", `Use: ${CLI_NAME} note "<METHOD /path>" "<what you learned>" [--json]`);
   }
   if ([op, ...operations].filter(Boolean).some(containsMachineLocalPath)) {
@@ -3996,7 +4162,7 @@ function cmdNote(argv) {
     console.log(JSON.stringify({ key: result.key, stack: bound.stack, environment: cfg.name, shared,
       note_id: result.note_id, ...(result.unchanged ? { unchanged: "that active account fact is already recorded" } : { recorded: text }),
       reconfirmed: result.reconfirmed ?? false, credential_state: result.credential_state,
-      by: recorded?.by ?? stamp.by, at: recorded?.at ?? stamp.at, file: result.file,
+      by: recorded?.by ?? stamp.by, at: recorded ? writtenDate(recorded.at) : stamp.at, ...(recorded && writtenDate(recorded.at) === null ? { history_issue: NOTE_DATE_ISSUE } : {}), file: result.file,
       evidence: recorded?.evidence ?? [], ...(recorded?.basis ? { basis: recorded.basis, source: recorded.source } : {}),
       evidence_attachment: result.unchanged ? "unchanged; the receipt shows the original saved references; requested references were not attached" : "the receipt lists every saved reference; evidence from superseded notes is not inherited",
       ...(evidence.length ? { [result.unchanged ? "requested_evidence_warnings" : "evidence_warnings"]: evidenceWarnings } : {}),
@@ -4013,8 +4179,15 @@ function cmdNote(argv) {
 
   // A note about an operation nobody has recorded is still worth keeping: the
   // whole point is capturing knowledge about endpoints the contract missed.
-  const key = scope === "stack" ? undefined : Object.keys(ctx.operations).find((k) => k === op)
+  let key = scope === "stack" ? undefined : Object.keys(ctx.operations).find((k) => k === op)
     ?? Object.keys(ctx.operations).find((k) => k.replace(/\/+$/, "") === op.replace(/\/+$/, ""));
+  // A confirmation names a saved note, so its operation is the saved entry a
+  // request to METHOD /path reaches, as show and api_note_context resolve it.
+  if (confirms !== undefined && scope !== "stack" && key === undefined && /^[A-Za-z]+ \//u.test(op)) {
+    const { resolveStoredOperation } = await import("../lib/client.mjs");
+    const found = resolveStoredOperation({ stack: currentStackScope()?.stack, environment: currentStackScope()?.config.name, operation: op }).operation;
+    if (found && Object.hasOwn(ctx.operations, found)) key = found;
+  }
   const target = key ?? op;
   const stamp = provenanceStamp(root);
   Object.assign(stamp, basisStamp);
@@ -4035,8 +4208,15 @@ function cmdNote(argv) {
   }
   let result;
   try {
-    result = saveContextNote(root, snapshot, { key: noteKey, ...(scope === "stack" ? { operations } : {}), note: text, stamp, relation });
+    result = confirms !== undefined
+      ? confirmContextNote(root, snapshot, { key: scope === "stack" ? noteKey : { kind: "operation", op: target }, note_id: confirms, stamp })
+      : saveContextNote(root, snapshot, { key: noteKey, ...(scope === "stack" ? { operations } : {}), note: text, stamp, relation, confirm: true });
   } catch (error) {
+    if (error.code === "NOTE_CONFIRM_RETIRED") noteRefusal({ refused: error.code, reason: error.message, note_id: error.note_id,
+      next: `Inspect ${CLI_NAME} show "${target}" --history for the retirement and its reason. To record that the claim holds again, save it as a new note.` });
+    if (error.code === "NOTE_CONFIRM_SUPERSEDED") noteRefusal({ refused: error.code, reason: error.message, note_id: error.note_id,
+      ...(error.replacement ? { replacement: error.replacement } : {}),
+      next: error.replacement ? `Read the replacement, then confirm it: ${CLI_NAME} note ${scope === "stack" ? "--scope stack" : `"${target}"`} --confirms ${error.replacement}` : `Inspect ${CLI_NAME} show "${target}" --history; the note is no longer active.` });
     if (error.code === 'NOTE_REVIEW_EVIDENCE_REQUIRED') reviewWriteError(error, { operation: scope === 'operation' ? target : undefined, stack: currentStackScope()?.stack });
     noteWriteError(error, scope);
   }
@@ -4050,15 +4230,19 @@ function cmdNote(argv) {
   const savedRecord = result.history?.records.find(record => record.id === result.note_id);
   const recordedStamp = savedRecord?.provenance;
   console.log(JSON.stringify({
-    ...(scope === "stack" ? { key: noteKey, stack: currentStackScope().stack } : { op: result.target }), ...(result.unchanged ? { unchanged: "that active note is already recorded" } : { recorded: text }),
-    ...draftReceipt, note_id: result.note_id, by: recordedStamp?.by ?? null, at: recordedStamp?.at ?? null, file: contextFile(),
+    ...(scope === "stack" ? { key: noteKey, stack: currentStackScope().stack } : { op: result.target }),
+    ...(result.unchanged ? { unchanged: "that active note is already recorded" } : { recorded: text }),
+    ...(result.confirmed ? { confirmed: true, ...result.confirmed } : {}),
+    ...draftReceipt, note_id: result.note_id, by: recordedStamp?.by ?? null, at: writtenDate(recordedStamp?.at), ...(recordedStamp && writtenDate(recordedStamp.at) === null ? { history_issue: NOTE_DATE_ISSUE } : {}), file: contextFile(),
     evidence: recordedStamp?.evidence ?? [], ...(recordedStamp?.basis ? { basis: recordedStamp.basis, source: recordedStamp.source } : {}),
-    evidence_attachment: result.unchanged
+    evidence_attachment: result.confirmed
+      ? "the note's own references are unchanged; requested references were attached to the confirmation only"
+      : result.unchanged
       ? "unchanged; the receipt shows the original saved references; requested references were not attached"
       : "the receipt lists every saved reference; evidence from superseded notes is not inherited",
     // A retry preserves the original record, including its evidence. Warnings
     // about references supplied on this invocation must not describe that record.
-    ...(evidence.length ? { [result.unchanged ? "requested_evidence_warnings" : "evidence_warnings"]: evidenceWarnings } : {}), pointers,
+    ...(evidence.length ? { [result.unchanged && !result.confirmed ? "requested_evidence_warnings" : "evidence_warnings"]: evidenceWarnings } : {}), pointers,
     undeclared_operation: scope === "stack" || key ? undefined : "this operation was not in the contract; the note is kept anyway",
   }, null, 1));
   if (pointers.state === "failed") process.exitCode = 1;
@@ -4533,7 +4717,7 @@ async function cmdImportInput(argv) {
   if (preparedClaims) {
     console.log(`imported test knowledge: ${claimReceipt.state}; ${claimReceipt.claims} source claims (import does not verify them)`);
     // Refresh only existing owned blocks. Import never installs an agent host.
-    const plans = planPointers(root, loadContext(root), advertisementPlan(root))
+    const plans = planPointers(root, loadContext(root), advertisementPlan(root), undefined, undefined, { existingOnly: true })
       .filter(p => existsSync(p.path) && readFileSync(p.path, 'utf8').includes(BEGIN));
     for (const plan of plans) {
       if (plan.action === 'conflict') console.log(`pointer not refreshed: ${plan.file} (${plan.reason})`);
@@ -5820,6 +6004,8 @@ const HELP = {
              example: `${CLI_NAME} protocol request.json --env local` },
   context: { blurb: "capture or retrieve scoped API observations, or explicitly bind legacy operation context",
              example: `${CLI_NAME} context query query.json` },
+  reference: { blurb: "register, list or remove local reference files the topic lookup searches (paths and titles only; never their text)",
+             example: `${CLI_NAME} reference add docs/runbook.md --title "Partner runbook"` },
   suite:   { blurb: "save and run named, re-runnable request suites",
              example: `${CLI_NAME} suite run smoke` },
   verify:  { blurb: "run saved suites as conformance probes; report what no longer holds as drift",
@@ -5879,11 +6065,11 @@ function printCommandHelp(name) {
     : name === "doctor"
     ? `\n\nOptions:\n  --offline                check local setup and MCP initialize without API requests\n  --probe <url>            override the target with one announced unauthenticated GET\n  --repair                 repair recognized Node and npm-cache launches in otherwise matching generated MCP wiring; preserve conflicts\n  --json                   machine-readable PASS/WARN/FAIL rows\n\nWithout --offline, the API client announces GET https://api.github.com/zen on a fresh install, or an unauthenticated HEAD to the configured base URL (one announced GET only if HEAD transport fails). --probe overrides either target with one GET. No redirects, retries or OAuth grants. Status, latency and safe rate-limit headers are retained locally as onboarding evidence, outside repository API contract knowledge. Read them with context query --onboarding (add --human for a terminal summary). HTTP reachability does not verify API assertions or authentication. MCP initialize proves a new process can start; an existing agent session still needs restart/reload.`
     : name === "request"
-    ? `\n\nUsage:\n  ${CLI_NAME} request <METHOD> <path> [body-json|-] [fields|-] [idempotency-key]\n  ${CLI_NAME} request <METHOD> <path> --body <json>\n\nOptions:\n  --body <json>            send one JSON body (also --body=<json>); choose this or a positional body, never both\n  --expect-status <100-599>  assert one HTTP response status (also --expect-status=200)\n\nNo assertion is assumed without this option. For richer assertions, use request envelope with an explicit v2 expect array; envelopes declare their own body.\nOn a fresh project with no API configuration, GET https://api.github.com/zen is the built-in onboarding example. It announces the request, sends no credentials, follows no redirects and makes no retries. Its local evidence is separate from shared repository API context. Other URLs require a configured provider.`
+    ? `\n\nUsage:\n  ${CLI_NAME} request <METHOD> <path> [body-json|-] [fields|-] [idempotency-key]\n  ${CLI_NAME} request <METHOD> <path> --body <json>\n\nOptions:\n  --body <json>            send one JSON body (also --body=<json>); choose this or a positional body, never both\n  --expect-status <100-599>  assert one HTTP response status (also --expect-status=200)\n  --notes-digest <digest>  for a write to an operation with saved notes: the digest a WRITE_HELD_FOR_NOTES refusal or show returned, after reading the notes\n\nNo assertion is assumed without this option. For richer assertions, use request envelope with an explicit v2 expect array; envelopes declare their own body.\nOn a fresh project with no API configuration, GET https://api.github.com/zen is the built-in onboarding example. It announces the request, sends no credentials, follows no redirects and makes no retries. Its local evidence is separate from shared repository API context. Other URLs require a configured provider.`
     : name === "protocol"
-    ? `\n\nUsage:\n  ${CLI_NAME} protocol <request.json> [--env <name>]\n\nThe input is one request, or an envelope whose requests each name a protocol.\nProtocols: http, graphql, jsonrpc, grpc, websocket. GraphQL subscriptions select graphql-transport-ws automatically.\nOutput is JSON; failures, partial results and incomplete captures exit nonzero. Requests use configured targets and authentication.\nDocs: docs/protocols.md`
+    ? `\n\nUsage:\n  ${CLI_NAME} protocol <request.json> [--env <name>]\n\nThe input is one request, or an envelope whose requests each name a protocol.\nProtocols: http, graphql, jsonrpc, grpc, websocket. GraphQL subscriptions select graphql-transport-ws automatically.\nA write (an HTTP write, a mutation or a non-read effect) to an operation with saved notes is held until the request names their digest in notes_digest.\nOutput is JSON; failures, partial results and incomplete captures exit nonzero. Requests use configured targets and authentication.\nDocs: docs/protocols.md`
     : name === "context"
-    ? `\n\nRead saved onboarding evidence without requests:\n  ${CLI_NAME} context query --onboarding [--human]\nThe default is JSON; --human prints a historical terminal summary, not a new doctor run.\nSubcommands:\n  ${CLI_NAME} context capture <input.json>    record an external observation or author claim\n  ${CLI_NAME} context query <query.json>      read matching local and granted-provider context\n  ${CLI_NAME} context migrate <input.json>    explicitly bind legacy HTTP operation identities\n  ${CLI_NAME} context keys [--dry-run] [--json]  link path and query keys to the earlier response fields that supplied them, from local evidence (names only)\n\nThese commands execute no API requests. Capture retains bounded structure, evidence identities and provenance. External claims do not become client verification.\nDocs: docs/protocols.md`
+    ? `\n\nRead saved onboarding evidence without requests:\n  ${CLI_NAME} context query --onboarding [--human]\nThe default is JSON; --human prints a historical terminal summary, not a new doctor run.\nSubcommands:\n  ${CLI_NAME} context capture <input.json>    record an external observation or author claim\n  ${CLI_NAME} context query <query.json>      read matching local and granted-provider context\n  ${CLI_NAME} context search "<text>" [--stack <name>] [--limit <n>]  look up saved notes, stack facts, lessons and registered references by topic\n  ${CLI_NAME} context migrate <input.json>    explicitly bind legacy HTTP operation identities\n  ${CLI_NAME} context keys [--dry-run] [--json]  link path and query keys to the earlier response fields that supplied them, from local evidence (names only)\n\nThese commands execute no API requests. Capture retains bounded structure, evidence identities and provenance. External claims do not become client verification.\nDocs: docs/protocols.md`
     : name === "show"
     ? `\n\nStack discovery:\n  ${CLI_NAME} show --stack <name> [--human] [--history]\nLists the selected stack's saved inventory, active notes and bounded scoped observations; omissions are named. JSON is the default. Observed responses remain separate from execution verification. Add an operation for full detail: ${CLI_NAME} show --stack <name> "GET /path". This command sends no API requests.`
     : name === "graph"
@@ -5900,6 +6086,8 @@ function printCommandHelp(name) {
       ? `\n\nCI options:\n  --ci                 diff findings against the reviewed baseline; exit 1 on new drift\n  --report-only        with --ci, print the same drift and exit 0 for findings\n  --summary <path>     with --ci, append a safe GitHub-flavored markdown summary\n  --no-execute         static audit and freshness only; send no API requests\n  --baseline           locally regenerate the accepted state for review`
     : name === "connect"
       ? `\n\nFirst API stack (only when the repository has none):\n  an OpenAPI contract, when found, becomes the first stack, as before\n  --base-url <url>     otherwise create it for this API; same checks as stack add (no credentials, query or fragment)\n  --stack <name>       name it (default: derived from the contract title or the host, api.stripe.com -> stripe)\n  --auth <scheme:VAR>  a credential reference by environment-variable name; never a value\n  --env <name>         its environment name (default: default)\n  with no flag, the one public API the code calls is chosen (source detected-in-code); several or none create\n  nothing and print stack add commands. Loopback and private hosts are listed, never chosen.\n  Until a stack exists, nothing your agent calls is kept. A second connect never adds a stack.\n\nOptional alpha feedback, interception and CI:\n  --alpha              compatibility alias; the feedback skill is installed by default\n  --claude-hook        explicitly merge a Claude Code PreToolUse hook that blocks curl/wget to configured repo APIs\n  --ci                 explicitly write .github/workflows/${CI_WORKFLOW_BASENAME}\n  --install <mode>     vendored: offline ${LAYOUT.ciTarball}; registry: exact generating CLI version\n  --switch-install     explicitly change an intact owned CI install to the selected mode\n  --dry-run            name optional hook/CI artifacts without writing them\n\nCodex hook: unsupported (no reliable project PreToolUse surface); MCP, skills, and pointer guidance remain.`
+    : name === "reference"
+      ? `\n\nUsage:\n  ${CLI_NAME} reference add <path> --title "<title>" [--stack <name>]\n  ${CLI_NAME} reference list\n  ${CLI_NAME} reference remove <path>\n\nThe registry is ${REFERENCES_FILE}: path, title and stack, never file text. A path must be repository-relative and resolve, after links, to a UTF-8 text file of at most ${MAX_REFERENCE_BYTES} bytes inside the repository and outside the private evidence folder. A file holding a credential-shaped value is refused (exit 2). context search reads registered files only and prints no text from them: it returns each file's path and matching line numbers. Registering or removing refreshes existing managed blocks. No request is sent.\nDocs: docs/stacks.md`
     : name === "unwire"
       ? `\n\nOptional CI cleanup:\n  removes an exact generated workflow and its digest-bound tarball when present; edited, foreign, linked, or ambiguous artifacts stay`
     : name === "learn"
@@ -5910,6 +6098,7 @@ function printCommandHelp(name) {
   if (new Set(["learn", "audit", "map", "doctor", "request", "protocol", "suite", "verify", "feedback"]).has(name))
     detail += `\n\nRequest environment:\n  --env <name>          select a named config environment (also --env=<name>); outranks API_ENV/default\n  API_BASE_URL          legacy layout only: overrides the selected environment's URL; output labels the override\n  Explicit stacks       use their configured environment URLs; API_BASE_URL does not override them`;
   if (["stack", "stacks", "init", "note", "show", "learn", "context", "request"].includes(name)) detail += `\n\nStack selection:\n  --stack <name>        choose one API stack; --env selects an environment within it\n  See docs/stacks.md for routing, isolation and legacy compatibility.`;
+  if (name === "note") detail += `\n\nConfirm a saved note:\n  ${CLI_NAME} note "<METHOD /path>" --confirms <note-id> [--evidence run-<id>]\nSaving the exact text of an active note again, or naming it with --confirms, adds no note: it records when the note was last confirmed and how many times. The note's id, text, evidence and review label do not change; a superseded note is refused with NOTE_CONFIRM_SUPERSEDED and its replacement.`;
   if (name === "note") detail += `\n\nStack facts:\n  ${CLI_NAME} note --stack <name> --scope stack "<lesson>" [--operations "GET /path" "POST /path"] [--evidence run-<id>]\nThe same relationship flags and history apply. Without --operations the fact applies throughout that stack. Five facts precede operation notes; omitted facts name show --stack <name>.`;
   if (name === "note") detail += `\n\nDraft acceptance:\n  ${CLI_NAME} note --stack <name> [--env <name>] --accept-draft <id> ["<edited wording>"] [--alongside | --supersedes <note-id>]\nDrafts are local suggestions bound to their original stack, environment, contract and evidence. They never write knowledge automatically; acceptance uses the normal secret, history and relationship rules.`;
   if (name === "note") detail += `\n\nAccount facts:\n  ${CLI_NAME} note --stack <name> --env <name> --scope account "<fact>" [--evidence run-<id>] [--shared]\nPrivate and local by default, scoped to the configured credential reference. --shared explicitly saves the fact and reference in committed knowledge. Credential fingerprints stay private. Rotation marks existing facts as changed until you explicitly repeat or correct each fact; reads never confirm them. Existing history and relationship flags apply. This records an authored claim, not an API verification.`;
@@ -5918,7 +6107,7 @@ function printCommandHelp(name) {
   if (name === 'review') detail += `\n\nPer-note decisions:\n  ${CLI_NAME} review "METHOD /path" --note sha256:<full-note-digest> --decision trusted|disputed|run-requested --by NAME --actor person|agent [--limits TEXT] [--reason TEXT] [--evidence run-ID] [--stack NAME] --json\nRepeat --note for an explicit batch, and --evidence for multiple run IDs. Disputes and run requests require a reason. Batch trust holds back authored-replaced notes and names their replacements. Latest decision wins; history is retained and exact retries are idempotent. Overturning trusted guidance takes a run for both people and agents. Agent self-trust needs new locally available covering evidence. Actor/by are caller-selected attribution, not authenticated identity. Text is data, never execution authority. A run request also writes one handoff with the verify prompt to the repository run-request inbox, for an agent to find with api_workbench status, read and ack; an exact retry adds none and nothing executes. If the inbox write fails, the decision stays saved and the receipt's handoff names the code. Show displays the latest review label, with a run request's status: open, acknowledged or run attached. Stable refusal codes and MCP equivalents: docs/note-history.md.`;
   if (name === 'note') detail += `\n\nBasis on new provenance:\n  --basis KIND [--source REF]\nKinds: ${NOTE_BASIS_KINDS.join(', ')}. Source is a run ID, repository-relative contract/source file and optional digest, or documentation URL without query values. Sources are data and are never fetched. Existing provenance is immutable; duplicate retries report the original basis. Legacy opening-word inference appears only on reads, explicitly marked inferred. --actor imported attributes import/summary tools separately from people and agents.\n` ;
   if (name === 'note') detail += `\n\nRetirement:\n  ${CLI_NAME} note "METHOD /path" "REASON TEXT" --retires sha256:<full-note-digest> --reason false|removed|replaced-by-version|no-longer-applies|other [--actor person|agent] [--by NAME] [--evidence run-ID] [--stack NAME] --json\nAppends a retirement note naming the original identity and a replacement link with a separate reason-class record. Original text and provenance remain in history. Trusted guidance requires an attached run, including ordinary supersession. Actor defaults to agent; by uses the local note author marker. Both are attribution, not authentication. Operation notes also accept --by and --actor when first authored. Never select notes by array position. Docs: docs/note-history.md.`;
-  if (name === "context") detail += `\n\nA query JSON may contain search (case-insensitive text) and operation to filter selected stack facts. Retrieval stays local and returns an omission count plus show command.`;
+  if (name === "context") detail += `\n\nA query JSON may contain search (case-insensitive text) and operation to filter scoped observations and selected stack facts; it does not search operation notes. For a topic, use context search: it searches every kind of saved note and registered reference across stacks (or the named --stack), returns at most 10 matches by default (--limit up to 100) with an omission count, and sends no request.`;
   if (name === "stack") detail += `\n\nImport a stack from another repository:\n  ${CLI_NAME} stack import <source> [--stack <name>]... [--all] [--as <name>] [--ref <git-ref>] [--dry-run] [--json]\n\n  <source>         a local path (a repository, its stacks directory or one stack folder) or a Git URL (https or ssh)\n  --stack <name>   choose a stack when the source holds several; repeatable\n  --all            import every stack in the source\n  --as <name>      install one imported stack under another name\n  --ref <git-ref>  branch, tag or commit of a Git source (default: its HEAD)\n  --dry-run        print the receipt and write nothing\n  --json           the receipt as JSON\n\nThe source is validated as untrusted data and nothing in it is executed. Its contract and notes arrive marked with the source, its commit and the import date; envFile paths, account facts, evidence files and references, learned shapes and review decisions stay behind. Importing again from the same source is an update that never overwrites local notes. A name that exists and came from elsewhere refuses and names --as. The receipt lists each environment's request host, token host, credential variable names and production flag. No API request is sent; a Git source is fetched with your own git, named before it runs, into a temporary bare repository that is never checked out. A secret-shaped note exits 2, a note-history refusal exits 3.`;
   if (name === "stack") detail += `\n\nRe-file an operation without deleting its note history:\n  ${CLI_NAME} stack move --to <stack> "<METHOD /path>" [--from <stack>] [--json]`;
   if (name === 'feedback') detail += `\n\nOptional send:\n  --send                  prepare a scanned, anonymized payload and private receipt, then apply feedback.send\n  --confirm-send          attest the human said yes to this report in the current session\n  --agent-note <text>      optional plain-text feedback, at most 4,000 characters\n  --answers <json-file>    cry_wolf, new_to_you and first_ten_minutes answers\n  --score <1-10>          optional integer score\n  --host-agent <name>      claude-code, codex or other\n  --json                  return the safe client result for a send, or the local report without --send\n\nAsk is the default; explicit allow discloses before sending. The never setting refuses every send. Repository API environment selection applies to collection only, never the feedback destination. See docs/feedback.md.`;
@@ -6064,7 +6253,7 @@ else if (command === 'survey') {
   process.stdout.write(result.output);
   process.exitCode = result.exitCode;
 }
-else if (command === "note") cmdNote(argv);
+else if (command === "note") await cmdNote(argv);
 else if (command === "verdict") cmdVerdict(argv);
 else if (command === "request" && argv.length === 2 && argv[1] === "--report") {
   // Static machine accounting has no request target or environment to select.
@@ -6073,7 +6262,7 @@ else if (command === "request" && argv.length === 2 && argv[1] === "--report") {
 }
 else if (command === "request") {
   const { args, environment } = requestArgs(argv.slice(1), "request", {
-    values: ["--body", "--expect-status", "--stack"], equals: ["--body", "--expect-status", "--stack"],
+    values: ["--body", "--expect-status", "--stack", "--notes-digest"], equals: ["--body", "--expect-status", "--stack", "--notes-digest"],
     dashValues: ["--body"], redactedUnknown: true,
   });
   if (!stackCatalog(repoRoot()).stacks.length && !isBuiltinStack(optionValue(args, '--stack')) && !isBuiltinFeedbackTarget(args[1])) selectRequestConfig(repoRoot(), environment);
@@ -6083,6 +6272,7 @@ else if (command === "request") {
 }
 else if (command === "protocol") await cmdProtocol(argv);
 else if (command === "context") cmdContext(argv);
+else if (command === "reference" || command === "references") cmdReference(argv);
 else if (command === "graph") await cmdGraph(argv);
 else if (command === "suite") await cmdSuite(argv);
 else if (command === "import") await cmdImport(argv);
@@ -6111,8 +6301,10 @@ try {
     const stack = optionValue(argv, '--stack'), environment = optionValue(argv, '--env');
     // Doctor diagnoses the complete catalog when no stack was selected.
     const repoOnboarding = command === 'context' && argv[1] === 'query' && argv[2] === '--onboarding' && !stack;
-    if (!repoOnboarding && (command !== 'doctor' || stack) && (command !== 'connect' || stack || stackCatalog(repoRoot()).stacks.length === 1 || stackCatalog(repoRoot()).defaults.default_stack)) scope = stackScope(repoRoot(), { stack, environment });
-    for (let i = argv.length - 1; i >= 0; i--) {
+    // A topic lookup reads every stack unless one is named; it parses --stack itself.
+    const topicSearch = command === 'context' && argv[1] === 'search';
+    if (!repoOnboarding && !topicSearch && (command !== 'doctor' || stack) && (command !== 'connect' || stack || stackCatalog(repoRoot()).stacks.length === 1 || stackCatalog(repoRoot()).defaults.default_stack)) scope = stackScope(repoRoot(), { stack, environment });
+    if (!topicSearch) for (let i = argv.length - 1; i >= 0; i--) {
       if (argv[i].startsWith('--stack=')) argv.splice(i, 1);
       else if (argv[i] === '--stack') argv.splice(i, 2);
     }

@@ -102,16 +102,17 @@ test('existing instruction files retain user text and receive the same managed b
   for (const path of Object.keys(own)) assert.equal(readFileSync(join(f.root, path), 'utf8'), before[path]);
 });
 
-test('a Claude bridge with user additions is preserved as an existing instruction file', t => {
+// CONTEXT-3: a CLAUDE.md that imports AGENTS.md among its own text loads the
+// block from AGENTS.md, so it is left byte for byte and gets no second copy.
+test('a Claude bridge with user additions is preserved byte for byte and gets no second copy of the block', t => {
   const own = BRIDGE + '\n# Added by the team\nPreserve our review policy.\n';
   const f = fixture(t, { 'CLAUDE.md': own });
   f.connect('--json');
-  const claude = readFileSync(join(f.root, 'CLAUDE.md'), 'utf8');
-  assert.ok(claude.startsWith(own));
-  assert.equal(managed(claude), managed(readFileSync(join(f.root, 'AGENTS.md'), 'utf8')));
+  assert.equal(readFileSync(join(f.root, 'CLAUDE.md'), 'utf8'), own);
+  assert.ok(managed(readFileSync(join(f.root, 'AGENTS.md'), 'utf8')));
   const unwire = f.invoke('unwire', '--json');
   assert.equal(unwire.code, 0, unwire.output);
-  assert.ok(readFileSync(join(f.root, 'CLAUDE.md'), 'utf8').startsWith(own));
+  assert.equal(readFileSync(join(f.root, 'CLAUDE.md'), 'utf8'), own);
 });
 
 test('migration replaces old managed instructions and preserves their surrounding user bytes', t => {

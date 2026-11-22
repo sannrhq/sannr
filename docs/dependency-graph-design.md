@@ -109,9 +109,9 @@ it. Foreign claims stay external claims even with a matching publisher pin, and
 they are dropped first when the shared response budget is exceeded. The same
 opt-in applies to detail inspection.
 
-Authored lessons also appear in the managed instruction block under
-**inherited lessons (authored, unverified)**, flattened and bounded. Block
-delimiters cannot come from lesson text. The block lists the context tools'
+Authored lessons are counted against their operation in the managed
+instruction block's index of noted operations; their text is not copied there
+and is read with `context search` or `api_note_context` with `search`. The block lists the context tools'
 workflow lines only when those tools are registered in the binding.
 
 ## What the graph does not claim

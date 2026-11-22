@@ -421,7 +421,7 @@ Enumeration executes zero tool calls.
 Resources and prompts are not declared by this server; they are recorded as
 `not_declared` and do not produce failed-list or repeated-diff noise.
 
-The current checked-in contract has **29 input fields**. The inspector reports
+The current checked-in contract has **30 input fields**. The inspector reports
 the complete declaration, including the protocol adapters and HTTP context capture controls:
 
 | Input field | Declared type |
@@ -448,6 +448,7 @@ the complete declaration, including the protocol adapters and HTTP context captu
 | files | object |
 | save_to | string |
 | idempotency_key | string |
+| notes_digest | string |
 | paginate | unspecified |
 | expect | array |
 | requests | array |
@@ -530,6 +531,30 @@ response was received.` when no request without it got a response. A missing
 Basic pair, a suite step that declares `auth`, and map reads refuse before
 sending instead.
 
+`notes_digest` is the digest of an operation's saved notes. A write to an
+operation with saved notes or applicable stack facts refuses with
+`WRITE_HELD_FOR_NOTES` (`NOTES_DIGEST_STALE`, `NOTES_DIGEST_INVALID` or
+`NOTES_DIGEST_OTHER_OPERATION` for a digest that no longer or never matched)
+before anything is sent, with the notes in `known` and the current digest in
+`error.details.notes_digest`; the same request with that `notes_digest` goes
+through. Batch steps carry their own `notes_digest`; a batch with held steps is
+refused before anything is sent when the client can know the hold before the
+batch runs, listing every such step in `error.details.held_steps`; a step
+whose target depends on a captured value is refused up front with
+`NOTES_TARGET_UNRESOLVED` and no digest unless it carries one, and a step that
+carried a digest and is still held when it runs is refused with the steps
+already sent named. `api_note_context`
+returns the same `notes_digest` for the operation it reads (a concrete path
+reads the saved operation a request to it reaches, as `show` does), and each
+note record it returns carries `written_at`, `last_confirmed_at` (null when
+never confirmed) and `confirmations`. The whole answer stays within
+`max_bytes`; the digest is always present, and records that do not fit are
+counted as omitted. A topic search returns the same three fields on each note
+and no digest: a write needs the digest of its own operation.
+`api_saved_requests` run takes the
+same `notes_digest`. See
+[API calls during coding](api-call-policy.md#saved-notes-arrive-before-a-write).
+
 `rate_limit` holds only what the server said: `limit`, `remaining` and
 `reset` from `RateLimit-*` or `X-RateLimit-*` headers, plus
 `throttled_by_server` and `retry_after_ms` on a 429 and `throttled` and
@@ -548,6 +573,14 @@ routing reads updated files on each call. Knowledge remains in the repository.
 
 `api_note_context` reads active operation notes with the Workbench closed:
 provide `operation`, optional `stack`, and optional `max_bytes` (512–1048576).
+Given `search` (topic text) in place of `operation`, it is the topic lookup
+that `context search` runs: operation notes, stack facts, shared account facts,
+scoped observation lessons and registered reference files, across stacks
+unless `stack` is named, at most `limit` matches (default 10, up to 100) with
+an omission count. See [stacks](stacks.md). For a registered reference file it returns
+the path and the matching line numbers, never the file's text. It stays
+read-only and sends no request. Use it before answering a question about an existing integration; the
+managed block lists which operations have notes but carries none of their text.
 Its `note_context.records` includes current review labels, basis/source and
 author categories. Disputed notes remain; retirement records identify the old
 claim and reason. Missing private runs do not erase saved reviews. The tool

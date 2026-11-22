@@ -189,7 +189,17 @@ another claim or `--supersedes sha256:<full-note-digest>` to replace its default
 guidance. The old text and attribution remain saved. Scope the replacement to
 its applicable date, version and environment; do not use current behavior to
 erase a historically correct claim. No relationship flag is needed for the
-first note, and exact active duplicates are idempotent.
+first note.
+
+Read the operation's saved notes before saving one, with the history
+inspection command above or `api_note_context`. When
+your observation says the same thing as a saved note, confirm that note
+instead of writing another: repeat its exact text with the `note` command, or,
+when the meaning matches but the wording differs, give the `note` command the
+operation and `--confirms sha256:<full-note-id>` with no text (add
+`--evidence run-<id>` for the run you looked at). A confirmation adds no note;
+it records when the note was last confirmed and how many times, and it never
+raises the note's evidence class or review label.
 
 Use repeatable `--evidence run-<id>` to attach an exact local request identity.
 Check the receipt's evidence producer and scope: an `api_request` run does not

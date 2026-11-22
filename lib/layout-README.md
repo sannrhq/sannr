@@ -17,7 +17,8 @@ the locations their hosts read. They point back here. Skills here are the
 source of truth; the host copies are installed by `{{CLI}} connect`.
 
 Run `{{CLI}} doctor` to inspect the setup, `{{CLI}} show "GET /example"` to read
-one operation, and `{{CLI}} migrate --dry-run` to preview an existing installation's
+one operation, `{{CLI}} context search "<topic>"` to look up saved notes and
+registered references by topic (no request is sent), and `{{CLI}} migrate --dry-run` to preview an existing installation's
 move into named API stacks or a product or collection rename. Inspect the plan,
 run `{{CLI}} migrate` with any selected `--name` and `--split` options, then run
 `{{CLI}} connect`. Migration refuses conflicting destinations and can be run

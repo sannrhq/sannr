@@ -139,6 +139,139 @@ For intended writes to an environment marked `production: true`, set
 host's server configuration, then restart the server in the host), or in your
 shell for CLI runs.
 
+### Saved notes arrive before a write
+
+A write that an agent issues by hand (a POST, PUT, PATCH or DELETE through
+`api_request`, the `request` command, a saved request run through
+`api_saved_requests` or `saved run`, and any protocol call through
+`api_request` or `protocol` whose effect is not a read) to an operation
+with saved knowledge is refused before anything is sent. The rule follows
+delivery: a write is held exactly when the `known` its response would carry
+holds a note or a stack fact. That includes a route the contract does not
+resolve (a path it does not list, another letter case, a parameter suffix),
+which still receives the facts that apply to every operation; its digest is
+keyed by the request's own method and path. Authored lessons saved on an
+operation's scoped context (`context capture` claims and `api_context_record`
+lessons, delivered in `known.scoped`) count too, for HTTP and protocol calls;
+they live in the committed store, so the digest is the same on every machine.
+The hold recognises the same write methods as the production guard (POST,
+PUT, PATCH, DELETE). The
+refusal is `kind: "policy"`, `code: "WRITE_HELD_FOR_NOTES"`, with the same
+`known` block a response would have carried (same caps, labels and omission
+counts; note text is untrusted data) and `error.details.notes_digest`. Read
+the notes, then resend the same request with `notes_digest` set to that value
+(`--notes-digest <digest>` on the `request` and `saved run` commands). Reading first avoids the
+refused attempt: `api_note_context` for one operation and `show "<METHOD
+/path>"` return the same `notes_digest`.
+
+- The digest is computed from the saved note identities only. It changes when
+  an applicable note or fact is added, superseded or retired, not when a note
+  is confirmed, and it is the same on every machine for the same store.
+  Account facts and facts from granted providers appear in `known` but are
+  neither part of the digest nor a reason to hold a write.
+- `NOTES_DIGEST_STALE`: the notes changed since the digest was issued; the
+  refusal carries the current notes and digest. `NOTES_DIGEST_INVALID`: not a
+  notes digest. `NOTES_DIGEST_OTHER_OPERATION`: the digest belongs to another
+  operation.
+- An operation with no notes, in a stack with no applicable facts, is never
+  held. Reads are never held. A protocol call is held wherever the production
+  write boundary would treat it as a write: every effect that is not `read`,
+  including `unknown`. A GraphQL query is a read by its operation type; gRPC
+  and WebSocket calls (and GraphQL subscriptions) are reads only when
+  `grpc.effect` or `websocket.effect` says `read`; a JSON-RPC call cannot
+  declare a read, so in a noted stack it always names the digest.
+- A batch (`requests` and `finally`) is checked whole before anything is sent,
+  protocol steps included (their effect and operation come from their own
+  input). Nothing is sent before a hold the client can know before the batch
+  runs; it predicts nothing a captured value decides. One refusal, `WRITE_HELD_FOR_NOTES` with `attempted: 0`, lists
+  every held step in `error.details.held_steps` (index, phase, id, code,
+  operation and `notes_digest`), with one capped `known` per distinct
+  operation in `error.details.known` keyed by digest; the whole refusal stays
+  within the token budget, and a `known` that does not fit is named as
+  omitted. Resend the batch with each step carrying its own `notes_digest`.
+  - `method`, `path`, `stack`, `environment`, `upstream`, `protocol` and
+    `notes_digest` must be strings in every step and in a single request; a
+    value of another type refuses the whole call with
+    `REQUEST_FIELD_INVALID`, naming the step and the field, and nothing is
+    sent.
+  - The run fills placeholders only in `path`, `params`, `headers`, `body`,
+    the protocol payloads (`graphql.variables`, `rpc.params`, `grpc.body`,
+    `grpc.messages`, `websocket.send`) and `expect`. A write step whose path
+    depends on a value captured in the batch is not resolved before the batch
+    runs. When the hold is on and a
+    stack it could reach has a stack fact, a note on an operation of that
+    method or an authored lesson, it is refused up front with
+    `NOTES_TARGET_UNRESOLVED` and no digest unless it carries a
+    `notes_digest`: read the notes for the operation it will reach and put
+    that digest on the step, or send the step on its own. Environment
+    variables are filled in before the check.
+  - The run refuses some steps before sending them, in this order: an
+    unsupported per-step `auth`, a protocol input without `protocol`, a
+    placeholder nothing fills (no earlier capture and no environment
+    variable; a placeholder in a field the run never fills, such as `method`,
+    counts), `auth` on a protocol step, `wait_for` on a protocol step,
+    `wait_for` on a write, and a non-numeric `wait_for` timing; then, at the
+    step's target, an unresolvable target, a literal credential, an invalid
+    or non-GET `paginate`, a configuration problem, an imported auth binding
+    or required absence, and the production guard; for a protocol step, its
+    input (an unsupported protocol, a payload that is not bounded JSON, a
+    conflicting input object, an HTTP-only option such as `method`, a
+    non-array `expect`, an invalid `timeout_ms`) and its target. The
+    pre-check calls the same functions on the arguments the step is sent
+    with. Such a step is never held for
+    notes. When the batch also has a held step, it is refused on the first
+    attempt under the first refused step's code, listing the held steps with
+    their digests in `held_steps` and the refused steps with the run's codes
+    in `refused_steps`; nothing is sent. A batch with no held step runs as
+    before and the run refuses that step at its turn.
+  - A write step that the pre-check cannot check at all is refused up front
+    with `NOTES_TARGET_UNRESOLVED` when a stack it could reach has knowledge
+    that could hold it; a digest does not change that. Send it on its own, or
+    correct it.
+  - If a step that carries a digest is still held when it runs (a wrong or
+    stale digest, or a digest for another operation than the one a captured
+    value reached), its refusal names the steps already sent in
+    `error.details.sent_steps`; resend only the remaining steps, never the
+    whole batch.
+- The digest also covers each note's current review decision: a trust or
+  dispute decision gives a new digest, so a caller holding an older one reads
+  the notes again. A confirmation does not change it. `api_note_context` and
+  `show` resolve the operation the way the request does (a concrete path, a
+  template under any parameter name, a lowercase method, a query string), so
+  the digest they return is always the one the write needs. A note saved on a
+  route the stack's contract does not declare is kept and can be read, but it
+  is not delivered with responses, so it holds no write and has no digest. A protocol call's refusal puts the
+  digest in its own input (the protocol JSON or the `api_request` arguments);
+  there is no read-first route for protocol operations.
+- When a stack's facts were changed outside the tool, they are withheld from
+  `known` until reviewed and the write is still held; the refusal's `next`
+  names the review receipt and the `review --scope stack --accept-notes`
+  command instead of telling you to read notes that are not there.
+- Every other refusal still applies and is checked first: a correct digest
+  never makes a production write, a configuration problem or a host rule
+  sendable. The hold is checked before authentication, so a held attempt sends
+  nothing, not even an OAuth token request, and records no observation.
+- A redirect that would carry the write to another operation with saved notes
+  is not followed (`NOTES_HOLD_REDIRECT_REFUSED`) unless the digest is that
+  operation's.
+- Saved suites (`suite run`), `verify`, `learn`, `doctor`, map probes, imports
+  and captures are not held: they run saved material with nobody reading in
+  between. The Workbench's Request view is not held (a person sends it). One
+  saved request run by an agent is held like `api_request`.
+- Where saved context is not delivered at all, nothing is held: with
+  `API_CONTEXT_OFF=1`, and in the legacy single-store layout when
+  `API_BASE_URL` overrides a configured environment without `API_CONTRACT`.
+  In those cases `show` and `api_note_context` offer no digest either.
+- To turn the hold off for a repository, commit `"holdWritesForNotes": false`
+  in `.sannr/defaults.json` (or in the `defaults` block of a legacy
+  `.sannr/config/api-environments.json`, read only at those fixed paths). The
+  setting has no environment variable, and no other file can turn it off: not
+  a parent directory's defaults and not a file named by `API_CONFIG`, inside
+  the repository or not. Turning it off always shows up in the repository's
+  diff. Commit it only when every client
+  that reads the repository is this version or later: 0.1.0-beta.1 refuses an
+  unknown key in `.sannr/defaults.json` (`STACK_KEY_UNKNOWN`).
+
 If MCP is unavailable, use the Sannr CLI. If a transport is unsupported or a
 raw-client comparison is necessary to debug Sannr, disclose the limitation and
 use a narrow fallback. An external observation can be captured with explicit

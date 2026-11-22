@@ -71,7 +71,7 @@ const METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIO
 const BIN = basename(process.argv[1] ?? PRODUCT);
 const USAGE = [
   `Usage: ${BIN} <METHOD> <path> [body-json|-] [fields|-] [idempotency-key] [--expect-status <100-599>]`,
-  `       ${BIN} <METHOD> <path> --body <json> [--expect-status <100-599>]`,
+  `       ${BIN} <METHOD> <path> --body <json> [--expect-status <100-599>] [--notes-digest <digest>]`,
   `       ${BIN} envelope '<json>'`,
   `       ${BIN} --report`,
   "",
@@ -85,12 +85,13 @@ const USAGE = [
   "--expect-status adds one explicit assertion; no assertion is assumed by default.",
   "--body <json> (also --body=<json>) supplies the same JSON body as body-json.",
   "Choose the option or a positional body, never both; envelopes declare body inside JSON.",
+  "--notes-digest names the saved-notes digest a write to a noted operation needs.",
 ].join("\n");
 const usageError = (code, message) => {
   console.error(JSON.stringify({ error: { code, message, next: `Run: ${BIN} --help` } }, null, 1));
   process.exit(1);
 };
-let expect, optionBody, stack, environment;
+let expect, optionBody, stack, environment, notesDigest;
 let hasOptionBody = false;
 {
   const args = [];
@@ -103,6 +104,13 @@ let hasOptionBody = false;
       if (!selected || selected.startsWith('--') || (selector === 'stack' ? stack !== undefined : environment !== undefined))
         usageError('REQUEST_SELECTOR_INVALID', 'Supply each stack/environment selector once with a name.');
       if (selector === 'stack') stack = selected; else environment = selected;
+      continue;
+    }
+    if (value === "--notes-digest" || value.startsWith("--notes-digest=")) {
+      const raw = value === "--notes-digest" ? process.argv[++i] : value.slice("--notes-digest=".length);
+      if (notesDigest !== undefined || !raw || raw.startsWith("--"))
+        usageError("REQUEST_NOTES_DIGEST_INVALID", "--notes-digest needs one digest and may appear once.");
+      notesDigest = raw;
       continue;
     }
     if (value === "--body" || value.startsWith("--body=")) {
@@ -125,6 +133,8 @@ let hasOptionBody = false;
   process.argv = [...process.argv.slice(0, 2), ...args];
   if (expect && (!args.length || args[0] === "envelope"))
     usageError("REQUEST_ASSERTION_MODE", "--expect-status belongs to a single METHOD/path request; envelope requests declare their own expect clauses.");
+  if (notesDigest !== undefined && (!args.length || args[0] === "envelope" || args[0] === "--report"))
+    usageError("REQUEST_NOTES_DIGEST_MODE", "--notes-digest belongs to a single METHOD/path request; envelope steps declare their own notes_digest.");
   if (hasOptionBody && (!args.length || args[0] === "envelope" || args[0] === "--report"))
     usageError("REQUEST_BODY_MODE", "--body belongs to a single METHOD/path request; envelope requests declare their own body.");
   if (args.some((value, index) => value.startsWith("--") && !(index === 0 && (value === "--help" || value === "--report"))))
@@ -182,7 +192,7 @@ if (process.argv[2] && process.argv[2] !== 'envelope') {
     && process.env.API_CONTRACT === undefined && process.env.API_CONFIG === undefined
     && process.env.API_ENV === undefined;
   const execute = async () => {
-    if (!freshZen) return apiRequest({ method, path, body, fields, idempotency_key, expect, ...(stack ? { stack } : {}), ...(environment ? { environment } : {}) }, { initiator: 'cli.request' });
+    if (!freshZen) return apiRequest({ method, path, body, fields, idempotency_key, expect, ...(notesDigest !== undefined ? { notes_digest: notesDigest } : {}), ...(stack ? { stack } : {}), ...(environment ? { environment } : {}) }, { initiator: 'cli.request' });
     const probe = await apiReadProbe({ path, method: "GET", expect, targetSource: "default",
       onRequest: ({ method, url }) => new Promise((resolve, reject) => process.stderr.write(
         `About to request: ${method} ${url} (built-in onboarding example; no credentials, redirects, or retries)\n`,

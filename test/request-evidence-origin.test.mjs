@@ -171,7 +171,12 @@ test('duplicate CLI evidence links and identical note retries reuse the original
   assert.equal(saved.notes_provenance[0].evidence[0].run_id, id);
   assert.equal(saved.notes_provenance[0].evidence[0].provenance.initiator, 'cli.request');
   await run(f, args);
-  assert.equal(readFileSync(path, 'utf8'), before, 'retry preserves the first note stamp and evidence binding');
+  // Since CONTEXT-4 an identical retry records a confirmation beside the note;
+  // the note itself, its stamp and its evidence binding are unchanged.
+  const retried = JSON.parse(readFileSync(path, 'utf8')), entry = retried.operations['GET /health'];
+  assert.equal(Object.values(entry.note_confirmations ?? {})[0]?.count, 1);
+  delete entry.note_confirmations;
+  assert.deepEqual(retried, JSON.parse(before), 'retry preserves the first note stamp and evidence binding');
   assert.equal(f.evidence().length, 1);
   assert.equal(f.seen.length, 1);
 });

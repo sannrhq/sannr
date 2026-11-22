@@ -10,6 +10,7 @@ import { PRODUCT, CONTEXT_BASENAME, POINTER_BEGIN, POINTER_END } from '../lib/br
 import { LAYOUT } from '../lib/layout.mjs';
 import { blockCode, blockText } from '../lib/block-text.mjs';
 import { stackRefreshLines } from '../lib/note-pointers.mjs';
+import { MAX_INDEXED_OPERATIONS, MAX_TOTAL_INDEXED_OPERATIONS } from '../lib/pointer-context.mjs';
 
 const cli = fileURLToPath(new URL('../bin/cli.mjs', import.meta.url));
 const writeJson = (path, value) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(value)); };
@@ -47,7 +48,10 @@ async function connect(f) {
 const section = (text, name) => text.split(`### Stack \`${name}\``)[1]?.split('\n### Stack ')[0];
 const facts = text => text.split('\n').filter(line => /^- `[^`]+` — /.test(line));
 
-test('STACKS-2(b) managed blocks deliver every stack default first with review labels and preserved fact text', async t => {
+// CONTEXT-3: each stack section lists its noted operations by identifier and
+// count; no note text crosses into the block.
+const indexed = text => text.split('\n').filter(line => /^- `[^`]+` \(\d+\)$/.test(line));
+test('STACKS-2(b) managed blocks list every stack default first with its noted operations and no note text', async t => {
   const f = fixture(t);
   const notes = ['An authored fixture lesson.', 'A line\nwith `code`, <tag>, and punctuation.'];
   const alpha = stack(f, 'alpha', notes), beta = stack(f, 'beta', ['Only beta context.'], { contract: true });
@@ -59,11 +63,8 @@ test('STACKS-2(b) managed blocks deliver every stack default first with review l
     const part = section(text, name); assert.ok(part, name);
     assert.match(part, /Environments: `production`, `staging`/);
     assert.match(part, name === 'beta' ? /Contract: bound/ : /Contract: not_bound/);
-    // Review data is additive; the original text still crosses the same
-    // escaping seam and remains associated with its own operation.
-    for (const line of facts(part)) assert.match(line, / \[Review data: unreviewed; basis: unknown \(inferred\)\]$/);
-    assert.deepEqual(facts(part).map(line => line.replace(/ \[Review data:.*\]$/, '')),
-      Object.entries(operations).flatMap(([op, entry]) => entry.notes.map(note => `- \`${blockCode(op)}\` — ${blockText(note)}`)));
+    assert.deepEqual(indexed(part), Object.keys(operations).map(op => `- \`${blockCode(op)}\` (1)`));
+    for (const entry of Object.values(operations)) for (const note of entry.notes) assert.ok(!text.includes(blockText(note)), note);
   }
   assert.match(section(text, 'unsorted'), /1 operation/);
   assert.ok(section(text, 'unsorted').includes(`${PRODUCT} stack move --to <stack> "<METHOD /path>"`));
@@ -72,46 +73,35 @@ test('STACKS-2(b) managed blocks deliver every stack default first with review l
   assert.equal(body(text), body(claude));
 });
 
-test('STACKS-2(c) per-stack and total caps name omitted counts and exact scoped show commands', async t => {
+test('STACKS-2(c) per-stack and total index caps name omitted counts and exact scoped show commands', async t => {
   const f = fixture(t);
-  for (const name of ['alpha', 'beta', 'charlie', 'delta', 'echo']) stack(f, name,
-    Array.from({ length: 20 }, (_, i) => `${name} lesson ${i}.`));
+  for (const name of ['alpha', 'beta', 'charlie', 'delta']) stack(f, name,
+    Array.from({ length: 25 }, (_, i) => `${name} lesson ${i}.`));
   const text = await connect(f);
-  assert.equal(facts(text).length, 60, 'total facts cap is 60');
-  for (const name of ['alpha', 'beta', 'charlie', 'delta', 'echo']) {
+  assert.equal(indexed(text).length, MAX_TOTAL_INDEXED_OPERATIONS, 'total index cap');
+  for (const name of ['alpha', 'beta', 'charlie', 'delta']) {
     const part = section(text, name); assert.ok(part, name);
-    const shown = name === 'echo' ? 0 : 15;
-    assert.equal(facts(part).length, shown);
+    const shown = name === 'delta' ? 0 : MAX_INDEXED_OPERATIONS;
+    assert.equal(indexed(part).length, shown);
     assert.ok(part.includes(`show --stack ${name}`), part);
-    assert.match(part, new RegExp(`${20 - shown} (?:gotchas|notes) omitted`));
-    assert.match(part, name === 'echo' ? /total cap/ : /per-stack cap/);
+    assert.match(part, new RegExp(`${25 - shown} more operations with notes omitted`));
+    assert.match(part, name === 'delta' ? /total cap/ : /index cap/);
   }
 });
 
-test('STACKS-2(c) inherited claims share per-stack and total fact caps with gotchas', async t => {
+test('STACKS-2(c) inherited lessons are counted with notes on their operation in the index', async t => {
   const f = fixture(t);
-  for (const name of ['alpha', 'beta', 'charlie', 'delta', 'echo']) {
-    stack(f, name, Array.from({ length: 10 }, (_, i) => `${name} gotcha ${i}.`));
-    const path = join(f.root, LAYOUT.collection, name, CONTEXT_BASENAME);
-    const ctx = JSON.parse(readFileSync(path));
-    ctx.api_context = { v: 1, operations: { fixture: { identity: { stack: name, operation: 'GET /inherited',
-      provider: name, protocol: 'http', environment: 'production' }, observations: [
-      { basis: 'authored', notes: Array.from({ length: 10 }, (_, i) => `${name} inherited ${i}.`) },
-    ] } } };
-    writeJson(path, ctx);
-  }
-  const text = await connect(f);
-  assert.equal(text.split('\n').filter(line => line.startsWith('- `GET ')).length, 60);
-  for (const name of ['alpha', 'beta', 'charlie', 'delta']) {
-    const part = section(text, name);
-    assert.equal(facts(part).length, 10);
-    assert.equal(part.split('\n').filter(line => line.startsWith('- `GET /inherited`')).length, 5);
-    assert.match(part, /5 inherited lessons omitted \(per-stack cap 15\)/);
-    assert.ok(part.includes(`show --stack ${name}`));
-  }
-  const echo = section(text, 'echo');
-  assert.match(echo, /10 inherited lessons omitted \(per-stack cap 15; total cap 60\)/);
-  assert.ok(echo.includes('show --stack echo'));
+  stack(f, 'alpha', Array.from({ length: 3 }, (_, i) => `alpha gotcha ${i}.`));
+  const path = join(f.root, LAYOUT.collection, 'alpha', CONTEXT_BASENAME);
+  const ctx = JSON.parse(readFileSync(path));
+  ctx.api_context = { v: 1, operations: { fixture: { identity: { stack: 'alpha', operation: 'GET /items/0',
+    provider: 'alpha', protocol: 'http', environment: 'production' }, observations: [
+    { basis: 'authored', notes: Array.from({ length: 4 }, (_, i) => `alpha inherited ${i}.`) },
+  ] } } };
+  writeJson(path, ctx);
+  const part = section(await connect(f), 'alpha');
+  assert.deepEqual(indexed(part), ['- `GET /items/0` (5)', '- `GET /items/1` (1)', '- `GET /items/2` (1)']);
+  assert.ok(!part.includes('alpha inherited'));
 });
 
 test('STACKS-2(b) environment contract overrides are named without borrowing default state', async t => {
@@ -145,7 +135,8 @@ test('STACKS-2(b) scoped-only knowledge is counted once per operation, including
   assert.match(section(text, 'alpha'), /— 2 operations; 2 written, 0 observed, 0 asserted, 0 verified/);
   assert.match(section(text, 'unsorted'), /— 1 operation; 1 written, 0 observed, 0 asserted, 0 verified/);
   assert.match(section(text, 'unsorted'), /1 operation awaiting a destination stack/);
-  assert.match(section(text, 'unsorted'), /A scoped authored fixture lesson/);
+  assert.ok(section(text, 'unsorted').includes('- `GET /stranded` (2)'));
+  assert.ok(!text.includes('A scoped authored fixture lesson'));
 });
 
 // QA-L1-01 / QA-L4-07: a stack added, imported or moved after connect must
@@ -226,7 +217,7 @@ test('stack move and stack import refresh the managed blocks to what a second co
   const moved = await run(f, ['stack', 'move', '--to', 'alpha', 'GET /items/0']);
   const afterMove = await assertMatchesSecondConnect(f, before, 'stack move');
   assert.doesNotMatch(moved, /Run .* connect to refresh/, moved);
-  assert.ok(section(afterMove[0], 'alpha').includes('An unfiled operation lesson.'), afterMove[0]);
+  assert.ok(section(afterMove[0], 'alpha').includes('- `GET /items/0` (1)'), afterMove[0]);
 
   const source = mkdtempSync(join(tmpdir(), 'stacks-2-pointers-source-'));
   t.after(() => rmSync(source, { recursive: true, force: true }));

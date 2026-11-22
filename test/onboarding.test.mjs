@@ -224,8 +224,9 @@ test("repeating start preserves project files byte-for-byte, including accumulat
   const report = result(await cli(f, "start", "--json"));
   assert.equal(report.status, "configured");
   assert.equal(read(knowledgePath(f.repo)), knowledge, "setup must preserve authored knowledge");
-  assert.ok(read(join(f.repo, "AGENTS.md")).includes("This is fixture-authored knowledge"),
-    "setup may refresh derived agent guidance to include the newly authored note");
+  // CONTEXT-3: refreshed guidance lists the noted operation, not the note text.
+  assert.ok(read(join(f.repo, "AGENTS.md")).includes("- `GET /items` (1)"),
+    "setup may refresh derived agent guidance to list the newly noted operation");
   const before = tree(f.repo);
   result(await cli(f, "start", "--json"));
   assert.deepEqual(tree(f.repo), before, "a second setup must preserve wiring and existing notes");

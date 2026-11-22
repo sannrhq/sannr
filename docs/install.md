@@ -114,7 +114,7 @@ it did not generate. On a fresh repository:
 | `.cursor/mcp.json` | Cursor registration, only when `.cursor/` already exists. |
 | `.sannr/skills/`, `.claude/skills/`, `.agents/skills/` | The `sannr-request`, `sannr-write` and `sannr-feedback` skills; `.sannr/skills/` is the source copy. |
 | `AGENTS.md` | The managed pointer block between `<!-- sannr:begin -->` and `<!-- sannr:end -->`; existing content is kept. |
-| `CLAUDE.md` | The same block if the file exists; otherwise a one-line file containing `@AGENTS.md`. |
+| `CLAUDE.md` | The same block if the file exists and does not import `AGENTS.md`; an existing file with an `@AGENTS.md` line gets no block, and an old block an earlier version wrote there is removed (every other byte stays); otherwise a one-line file containing `@AGENTS.md`. |
 | `.sannr/README.md`, `.sannr/.gitignore`, `.sannr/layout.json` | The generated directory guide, the ignore rule for local evidence, and the layout marker. |
 | `~/.sannr/registry.json` | A machine-local list of repositories set up on this machine (`SANNR_HOME` moves it). |
 

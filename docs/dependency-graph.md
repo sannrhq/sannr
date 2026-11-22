@@ -208,10 +208,11 @@ Correct an invalid reference before retrying instead of discarding available
 evidence. When `context.snapshot` is configured, the same call refreshes that
 local artifact after saving the lesson. Otherwise export explicitly to share it.
 
-When the managed instruction block is rendered, recorded authored lessons also
-appear under **inherited lessons (authored, unverified)**. Their scope and text
-are flattened and bounded through the same block-text boundary as notes;
-lesson text cannot introduce a block delimiter. Workflow lines naming
+When the managed instruction block is rendered, recorded authored lessons are
+counted against their operation in its index of noted operations; their text
+and scope are not copied into the block. Read them with `context search` or
+`api_note_context` with `search`, which return the operation, provider,
+protocol and environment. Workflow lines naming
 `api_context` or `api_context_record` appear only when those tools are registered.
 Recording refuses terminal, Unicode format (`\p{Cf}`), and bidi control
 characters with a named input error before saving the lesson.

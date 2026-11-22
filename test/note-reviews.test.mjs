@@ -582,13 +582,18 @@ test('a review decision on a clone without setup registration or local shim keep
   rmSync(join(f.root, 'node_modules'), { recursive: true, force: true });
   for (const file of MCP_REGISTRATION_FILES) rmSync(join(f.root, file), { force: true });
   const decided = await ok(f, review(first.note_id, 'run-requested', ['--reason', 'Check the list status.']));
-  assert.equal(decided.pointers.state, 'written');
+  // CONTEXT-3: review labels are not in the block, so the decision leaves it byte for byte.
+  assert.equal(decided.pointers.state, 'unchanged');
+  assert.equal(readFileSync(agents, 'utf8'), before);
+  // A note on an operation that had none does rewrite the block on the clone.
+  const rewritten = await ok(f, ['note', 'GET /other', 'Documented: the other list is returned.']);
+  assert.equal(rewritten.pointers.state, 'written');
   const after = readFileSync(agents, 'utf8');
-  assert.ok(after.split('\n').includes(marker), 'the committed setup marker survives the decision');
+  assert.ok(after.split('\n').includes(marker), 'the committed setup marker survives the rewrite');
   assert.ok(!after.includes('A current setup identifier is not available'));
   assert.equal(after.split(`\`${POINTER_CLI_NAME} `).length - 1, spelled, 'command spellings are unchanged');
   assert.ok(!/npx --yes/.test(after));
-  assert.match(after, /Review data: unreviewed · run-requested by Reviewer/);
-  const strip = text => text.replace(/\[Review data:[^\]]*\]/gu, '');
+  const strip = text => text.split('\n').filter(line => !/^- `GET \/[a-z]+` \(\d+\)$/u.test(line) && !/^Saved operation notes: /u.test(line)).join('\n');
+  assert.ok(after.includes('- `GET /other` (1)'));
   assert.equal(strip(after), strip(before), 'only the knowledge lines changed');
 });

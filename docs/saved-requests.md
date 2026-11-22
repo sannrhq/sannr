@@ -30,6 +30,13 @@ sannr saved reopen run-RECORDED_ID --stack orders
 sannr saved inspect run-RECORDED_ID --stack orders
 ```
 
+A run that writes to an operation with saved notes (through `saved run` or the
+`api_saved_requests` run action) is held before anything is sent, with
+`WRITE_HELD_FOR_NOTES`, the notes in `known` and a `notes_digest`; rerun with
+`--notes-digest <digest>` (or `notes_digest` in the MCP call) after reading
+them. The Workbench's Request view is not held. See
+[API calls during coding](api-call-policy.md#saved-notes-arrive-before-a-write).
+
 The document reader also accepts `--file -`. Runtime input files must be inside
 the repository, untracked and ignored by Git; symlinks and hard links are
 refused. Stdin and declared environment references are alternatives. Do not put
@@ -137,8 +144,11 @@ strings the client builds around the concrete request path are built with
 the value already removed: the operation name on a stack with no bound
 contract (`GET /bot/7/getMe` reads `GET /bot/[redacted]/getMe` in the usage
 log, the result, `receipt` and the `view` page), the suggested `note` command
-after a run of failures, and the note on a redirect that returns to a visited
-path. Each path segment is compared whole with the value, so a value's last
+after a run of failures, the note on a redirect that returns to a visited
+path, and the operation a held write names (`WRITE_HELD_FOR_NOTES` and the
+other notes-digest refusals, a batch's held steps, and the paths of a
+redirect the hold did not follow); the notes digest is still computed over
+the concrete path. Each path segment is compared whole with the value, so a value's last
 character never matters (`Yd.` gives `GET /bot/[redacted]`).
 
 Text the API returns is also read for a URL or absolute path inside a longer

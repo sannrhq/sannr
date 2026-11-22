@@ -63,8 +63,11 @@ Git, including a directory that has not been initialized as a Git repository.
 ## The files an agent host reads
 
 The full pointer block stays in `AGENTS.md`, where agents load it passively.
-An existing `CLAUDE.md` receives the same block; when absent, it is created with
-the single line `@AGENTS.md` to load that shared guidance. The block names the
+An existing `CLAUDE.md` receives the same block, unless it already imports
+`AGENTS.md` with an exact `@AGENTS.md` line (outside a code fence, an HTML
+comment or front matter); when absent, it is created with the single line
+`@AGENTS.md` to load that shared guidance. The block lists which operations
+have saved notes and how to look them up; it carries no note text. The block names the
 knowledge and guidance paths inside `.sannr/`.
 Host-native registrations stay in `.mcp.json` and `.codex/config.toml`, with
 additional supported host files where those hosts are present. They bind the
