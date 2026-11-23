@@ -193,8 +193,24 @@ operation it found and gives no digest.
   every held step in `error.details.held_steps` (index, phase, id, code,
   operation and `notes_digest`), with one capped `known` per distinct
   operation in `error.details.known` keyed by digest; the whole refusal stays
-  within the token budget, and a `known` that does not fit is named as
-  omitted. Resend the batch with each step carrying its own `notes_digest`.
+  within the token budget. A refusal gives a step's `notes_digest` only with
+  that step's notes: a held step whose notes do not fit is still listed with
+  its code and operation, but its digest appears nowhere in the refusal, and
+  its `notes` (`omitted: true`) says how to read them: `api_note_context` or
+  `show` for an HTTP operation, which return the notes and the digest
+  together, or the step sent on its own for a protocol call. Resend the batch
+  with each step carrying its own `notes_digest`.
+  - A protocol step the run refuses from its own input and plan is refused
+    by the pre-check with the same code, from the same function:
+    `PROTOCOL_INPUT_CONFLICT` (`websocket` options on a GraphQL call that is
+    not a subscription), `PROTOCOL_HEADER_ASSERTION_UNSUPPORTED` (a header
+    `expect` on gRPC, WebSocket or a GraphQL subscription), and an operation
+    name that cannot be a saved-context identity (a control or format
+    character, a credential shape, more than 512 characters;
+    `CONTEXT_INPUT_INVALID` for a zero-width or control character). When the
+    hold could apply to the step, the batch is refused up front under that
+    code with the step in `refused_steps` and no digest for it; nothing is
+    sent.
   - `method`, `path`, `stack`, `environment`, `upstream`, `protocol` and
     `notes_digest` must be strings in every step and in a single request; a
     value of another type refuses the whole call with

@@ -644,8 +644,17 @@ test('CONTEXT-4 a batch refusal carries one capped known per operation and stays
   const out = await f.cli(['request', 'envelope', JSON.stringify({ stack: 'orders', requests: steps })], env);
   const held = out.value;
   assert.equal(held.error.code, 'WRITE_HELD_FOR_NOTES', out.stdout + out.stderr);
-  assert.equal(Object.keys(held.error.details.known).length, 1, 'one known per distinct operation');
-  assert.equal(new Set(held.error.details.held_steps.map(step => step.known)).size, 1);
+  // One distinct operation: either its known is shown once, keyed by the
+  // digest every step names, or (N5) it does not fit and no step carries a
+  // digest at all.
+  const keys = Object.keys(held.error.details.known);
+  assert.ok(keys.length <= 1, 'at most one known per distinct operation');
+  const listed = held.error.details.held_steps;
+  if (keys.length) assert.ok(listed.every(step => step.notes_digest === keys[0] && step.known === keys[0]));
+  else {
+    assert.ok(listed.every(step => step.notes_digest === undefined && step.notes?.omitted === true), JSON.stringify(listed));
+    assert.ok(!/notes:v1:/u.test(JSON.stringify(held)), 'no digest without its notes');
+  }
   assert.ok(Buffer.byteLength(JSON.stringify(held)) <= 2000 * 4, `refusal is ${Buffer.byteLength(JSON.stringify(held))} bytes`);
   assert.deepEqual(f.counted(), []);
 });
@@ -873,25 +882,26 @@ test('CONTEXT-4 a hand-edited operation key with a line break or a zero-width ch
   const store = JSON.parse(readFileSync(file, 'utf8'));
   store.operations['POST /orders/​marker-key-zw'] = structuredClone(store.operations['POST /orders']);
   store.operations['POST /orders/x\nmarker-key-nl'] = structuredClone(store.operations['POST /orders']);
+  store.operations[`POST /orders/x${String.fromCharCode(0x2028)}marker-key-ls`] = structuredClone(store.operations['POST /orders']);
   writeFileSync(file, JSON.stringify(store));
   const outputs = [];
   const searched = await f.cli(['context', 'search', 'marker-orders-post', '--stack', 'orders']);
   assert.equal(searched.code, 0, searched.stdout + searched.stderr);
-  assert.equal(searched.value.withheld_operations, 2);
+  assert.equal(searched.value.withheld_operations, 3);
   assert.ok(searched.value.matches.some(match => match.operation === 'POST /orders'), 'the printable key is still found');
   outputs.push(searched.stdout + searched.stderr);
   const found = await f.mcp('api_note_context', { search: 'marker-orders-post' });
-  assert.equal(found.withheld_operations, 2);
+  assert.equal(found.withheld_operations, 3);
   outputs.push(JSON.stringify(found));
   for (const format of [[], ['--human'], ['--history'], ['--human', '--history'], ['--json']]) {
     const shown = await f.cli(['show', '--stack', 'orders', ...format]);
     assert.equal(shown.code, 0, `${format}: ${shown.stdout}${shown.stderr}`);
     outputs.push(shown.stdout + shown.stderr);
   }
-  assert.equal((await f.cli(['show', '--stack', 'orders', '--json'])).value.withheld['operation-key'], 2);
+  assert.equal((await f.cli(['show', '--stack', 'orders', '--json'])).value.withheld['operation-key'], 3);
   for (const output of outputs) {
     assert.ok(!output.includes('marker-key'), output.slice(0, 400));
-    assert.ok(!output.includes('​') && !output.includes('\\u200b'));
+    assert.ok(!output.includes('​') && !output.includes('\\u200b') && !output.includes(String.fromCharCode(0x2028)));
   }
 });
 
@@ -1199,4 +1209,184 @@ test('CONTEXT-4 a held saved request on a stack with no contract names its opera
   const pageText = page ? readFileSync(page, 'utf8') : '';
   for (const { value, name } of cases) for (const form of shownForms(value, name))
     for (const output of [machine.stdout, human.stdout, human.stderr, view.stdout, view.stderr, pageText]) assert.ok(!output.includes(form), `${value} is shown by receipt or view`);
+});
+
+// N2: routes under /Users, /home, /private and /tmp are ordinary API routes:
+// show --stack lists them and a lesson saved on one is found by both lookups.
+// A key with a line break, a zero-width character or a credential shape is
+// still withheld from all three and counted.
+test('CONTEXT-4 routes under /Users, /home, /private and /tmp are listed by show --stack and found by both lookups; unsafe keys are still withheld and counted', async t => {
+  const f = await fixture(t);
+  const route = { responses: { 200: { description: 'Synthetic' } } };
+  // Composed at run time: no machine-path-shaped literal is written in this file.
+  const routes = [['Users'], ['home', 'feeds'], ['private', 'keys'], ['tmp', 'uploads']].map(parts => ['', ...parts].join('/'));
+  writeFileSync(join(f.root, 'scim.openapi.json'), JSON.stringify({ openapi: '3.0.3', info: { title: 'Directory', version: '1' },
+    paths: Object.fromEntries(routes.map(path => [path, { get: route }])) }));
+  createFixtureStack(f.root, { name: 'scim', baseUrl: `${f.origin}/scim-api`, contract: 'scim.openapi.json' });
+  await f.json('init', '--stack', 'scim', '--json');
+  const read = await f.mcp(TOOL_NAME, { stack: 'scim', method: 'GET', path: '/Users' });
+  assert.equal(read.ok, true, JSON.stringify(read.error));
+  assert.deepEqual(f.counted(), ['GET /scim-api/Users']);
+  await saveLesson(f, 'scim', read, 'The directory pages users one hundred at a time. marker-scim-users');
+  const listed = await f.cli(['show', '--stack', 'scim', '--json']);
+  assert.equal(listed.code, 0, listed.stdout + listed.stderr);
+  for (const path of routes) assert.ok(listed.value.operations.some(row => row.op === `GET ${path}`), path);
+  assert.equal(listed.value.withheld?.['operation-key'], undefined);
+  const searched = await f.cli(['context', 'search', 'marker-scim-users']);
+  assert.equal(searched.code, 0, searched.stdout + searched.stderr);
+  assert.ok(searched.value.matches.some(match => match.kind === 'observation-lesson' && match.operation === 'GET /Users'), searched.stdout);
+  assert.equal(searched.value.withheld_operations, undefined);
+  const found = await f.mcp('api_note_context', { search: 'marker-scim-users' });
+  assert.ok(found.matches.some(match => match.kind === 'observation-lesson' && match.operation === 'GET /Users'), JSON.stringify(found));
+  // Hand-edited keys that are unsafe to print anywhere.
+  const file = fixtureContextFile(f.root, 'orders');
+  const store = JSON.parse(readFileSync(file, 'utf8'));
+  const credential = ['sk', '_live_'].join('') + 'A1b2C3d4'.repeat(4);
+  for (const key of [`POST /orders/${credential}`, `POST /orders/x${String.fromCharCode(0x200b)}marker-key-zw`, 'POST /orders/x\nmarker-key-nl'])
+    store.operations[key] = structuredClone(store.operations['POST /orders']);
+  writeFileSync(file, JSON.stringify(store));
+  const outputs = [];
+  const unsafe = await f.cli(['context', 'search', 'marker-orders-post', '--stack', 'orders']);
+  assert.equal(unsafe.code, 0, unsafe.stdout + unsafe.stderr);
+  assert.equal(unsafe.value.withheld_operations, 3);
+  outputs.push(unsafe.stdout + unsafe.stderr);
+  const viaMcp = await f.mcp('api_note_context', { search: 'marker-orders-post' });
+  assert.equal(viaMcp.withheld_operations, 3);
+  outputs.push(JSON.stringify(viaMcp));
+  const shown = await f.cli(['show', '--stack', 'orders', '--json']);
+  assert.equal(shown.value.withheld['operation-key'], 3);
+  outputs.push(shown.stdout, (await f.cli(['show', '--stack', 'orders', '--human'])).stdout);
+  for (const output of outputs) assert.ok(!output.includes('marker-key') && !output.includes(credential), output.slice(0, 400));
+  assert.deepEqual(f.counted(), []);
+});
+
+// N3: a JSON-RPC step whose method name cannot be a saved-context identity is
+// refused by the pre-check with the run's own code, from the function the run
+// uses, so nothing is sent and no digest is offered for it.
+test('CONTEXT-4 a batch with a JSON-RPC method name the run refuses as an identity is refused up front with no digest for it, and nothing is sent', async t => {
+  const f = await fixture(t);
+  const name = `orders${String.fromCharCode(0x200b)}cancel`;
+  const alone = await request(f, { protocol: 'jsonrpc', path: '/rpc', rpc: { method: name } });
+  assert.equal(alone.error?.code, 'CONTEXT_INPUT_INVALID', JSON.stringify(alone));
+  assert.deepEqual(f.counted(), []);
+  assert.ok(!JSON.stringify(alone).includes('notes:v1:'), 'no digest is offered for it alone');
+  const create = (await f.mcp('api_note_context', { operation: 'POST /orders', stack: 'orders' })).notes_digest;
+  const batch = await f.mcp(TOOL_NAME, { stack: 'orders', requests: [
+    { id: 'create', method: 'POST', path: '/orders', body: {}, notes_digest: create },
+    { id: 'rpc', protocol: 'jsonrpc', path: '/rpc', rpc: { method: name } }] });
+  assert.deepEqual(f.counted(), [], JSON.stringify(batch));
+  assert.equal(batch.attempted, 0);
+  assert.equal(batch.error?.code, 'CONTEXT_INPUT_INVALID', JSON.stringify(batch));
+  assert.deepEqual(batch.error.details.refused_steps.map(step => [step.id, step.code]), [['rpc', 'CONTEXT_INPUT_INVALID']]);
+  assert.ok(!batch.error.details.held_steps.some(step => step.id === 'rpc'));
+  assert.deepEqual(Object.keys(batch.error.details.known), []);
+  assert.ok(!JSON.stringify(batch).includes('notes:v1:'), 'the refusal holds no digest');
+});
+
+// N4: a redirect refused under on_failure "continue" leaves only its write to
+// the destination; the steps after it are sent once by that run.
+test('CONTEXT-4 a redirect refused under on_failure continue: the server count equals the steps sent, and the destination write is sent once, in and out of a batch', async t => {
+  const f = await fixture(t);
+  const legacy = (await request(f, { method: 'POST', path: '/legacy-orders', body: {} })).error.details.notes_digest;
+  const patch = (await f.mcp('api_note_context', { operation: 'PATCH /orders/{id}', stack: 'orders' })).notes_digest;
+  f.counted();
+  const result = await f.mcp(TOOL_NAME, { stack: 'orders', on_failure: 'continue', requests: [
+    { id: 'legacy', method: 'POST', path: '/legacy-orders', body: {}, notes_digest: legacy },
+    { id: 'patch', method: 'PATCH', path: '/orders/1', body: {}, notes_digest: patch }] });
+  const reached = f.counted();
+  assert.deepEqual(reached, ['POST /orders-api/legacy-orders', 'PATCH /orders-api/orders/1']);
+  assert.equal(reached.length, result.attempted, JSON.stringify(result));
+  const refused = result.results[0];
+  assert.equal(refused.error?.code, 'NOTES_HOLD_REDIRECT_REFUSED', JSON.stringify(refused));
+  assert.equal(result.results[1].ok, true, JSON.stringify(result.results[1]));
+  assert.equal(refused.error.details.operation, 'POST /orders');
+  const there = await request(f, { method: 'POST', path: '/orders', body: {}, notes_digest: refused.error.details.notes_digest });
+  assert.equal(there.ok, true, JSON.stringify(there.error));
+  assert.deepEqual(f.counted(), ['POST /orders-api/orders']);
+  // Outside a batch: the refusal's digest sends the write to the destination once.
+  const single = await request(f, { method: 'POST', path: '/legacy-orders', body: {}, notes_digest: legacy });
+  assert.equal(single.error?.code, 'NOTES_HOLD_REDIRECT_REFUSED', JSON.stringify(single));
+  assert.deepEqual(f.counted(), ['POST /orders-api/legacy-orders']);
+  assert.equal(single.error.details.operation, 'POST /orders');
+  const sent = await request(f, { method: 'POST', path: '/orders', body: {}, notes_digest: single.error.details.notes_digest });
+  assert.equal(sent.ok, true, JSON.stringify(sent.error));
+  assert.deepEqual(f.counted(), ['POST /orders-api/orders']);
+});
+
+// N5: a batch refusal hands over a step's digest only together with its notes.
+function checkDigestsHaveNotes(refusal, texts, truth) {
+  const json = JSON.stringify(refusal);
+  const steps = refusal.error.details.held_steps;
+  const given = new Set(json.match(/notes:v1:[A-Za-z0-9:_-]+/gu) ?? []);
+  for (const digest of given) {
+    const owners = steps.filter(step => step.notes_digest === digest);
+    assert.ok(owners.length, `${digest} belongs to a held step`);
+    assert.ok(Object.hasOwn(refusal.error.details.known, digest), `${digest} keys a known`);
+    const shown = JSON.stringify(refusal.error.details.known[digest]);
+    for (const step of owners) assert.ok(shown.includes(texts[step.id]), `${step.id}: its note text is in the refusal`);
+  }
+  const left = steps.filter(step => step.notes_digest === undefined);
+  for (const step of left) {
+    assert.equal(step.notes?.omitted, true, JSON.stringify(step));
+    assert.ok(step.code && step.operation, JSON.stringify(step));
+    assert.ok(!json.includes(truth[step.id]), `${step.id}: its digest is nowhere in the refusal`);
+  }
+  return left.map(step => step.id);
+}
+test('CONTEXT-4 at the default budget a batch refusal gives a digest only with its notes, a step left out carries none, and after a read both steps send once', async t => {
+  const f = await fixture(t);
+  const texts = { create: 'marker-orders-post', patch: 'marker-orders-patch' };
+  const batch = digests => ({ stack: 'orders', requests: [
+    { id: 'create', method: 'POST', path: '/orders', body: {}, ...(digests ? { notes_digest: digests.create } : {}) },
+    { id: 'patch', method: 'PATCH', path: '/orders/1', body: {}, ...(digests ? { notes_digest: digests.patch } : {}) }] });
+  const truthNow = async () => ({
+    create: (await f.mcpDefault('api_note_context', { operation: 'POST /orders', stack: 'orders' })).notes_digest,
+    patch: (await f.mcpDefault('api_note_context', { operation: 'PATCH /orders/{id}', stack: 'orders' })).notes_digest });
+  // Two one-line notes (with the stack fact), then notes that cannot fit.
+  for (const round of ['one-line', 'long']) {
+    if (round === 'long') for (let i = 0; i < 6; i++) for (const op of ['POST /orders', 'PATCH /orders/{id}'])
+      await f.json('note', '--stack', 'orders', op, `Synthetic long ${op} lesson ${i}: ${'a fixture explanation that takes room in the refusal '.repeat(6)}marker-long-${i}`, '--alongside', '--json');
+    const truth = await truthNow();
+    const held = await f.mcpDefault(TOOL_NAME, batch());
+    assert.equal(held.error?.code, 'WRITE_HELD_FOR_NOTES', JSON.stringify(held));
+    assert.deepEqual(f.counted(), []);
+    assert.deepEqual(held.error.details.held_steps.map(step => step.id), ['create', 'patch']);
+    const left = checkDigestsHaveNotes(held, texts, truth);
+    if (round === 'long') assert.ok(left.length >= 1, 'at least one step is left out at the default budget');
+    // Each step left out is read with api_note_context, which gives the digest.
+    const digests = Object.fromEntries(held.error.details.held_steps.map(step => [step.id, step.notes_digest]));
+    for (const id of left) digests[id] = truth[id];
+    const sent = await f.mcpDefault(TOOL_NAME, batch(digests));
+    assert.equal(sent.ok, true, JSON.stringify(sent.error ?? sent.results?.map(row => row.error)));
+    assert.deepEqual(f.counted(), ['POST /orders-api/orders', 'PATCH /orders-api/orders/1'], round);
+    if (round === 'one-line') {
+      // At a budget of 8,000 both steps are shown with their digests.
+      const large = await f.mcp(TOOL_NAME, batch());
+      assert.deepEqual(checkDigestsHaveNotes(large, texts, truth), []);
+      assert.deepEqual(large.error.details.held_steps.map(step => step.notes_digest), [truth.create, truth.patch]);
+      assert.deepEqual(f.counted(), []);
+    }
+  }
+});
+
+// F1: a protocol step the run refuses from its own input and plan
+// (protocolPlanRefusal) is refused by the pre-check with the same code, so a
+// batch is refused up front with nothing sent and no digest offered for it.
+test('CONTEXT-4 a batch with a GraphQL mutation carrying websocket options is refused up front as PROTOCOL_INPUT_CONFLICT with no digest for it, and nothing is sent', async t => {
+  const f = await fixture(t);
+  const step = { protocol: 'graphql', path: '/graphql', graphql: { document: 'mutation { cancelOrder { id } }' }, websocket: { timeout_ms: 1000 } };
+  const alone = await request(f, step);
+  assert.equal(alone.error?.code, 'PROTOCOL_INPUT_CONFLICT', JSON.stringify(alone));
+  assert.deepEqual(f.counted(), []);
+  assert.ok(!JSON.stringify(alone).includes('notes:v1:'), 'no digest is offered for it alone');
+  const create = (await f.mcp('api_note_context', { operation: 'POST /orders', stack: 'orders' })).notes_digest;
+  const batch = await f.mcp(TOOL_NAME, { stack: 'orders', requests: [
+    { id: 'create', method: 'POST', path: '/orders', body: {}, notes_digest: create },
+    { id: 'cancel', ...step }] });
+  assert.deepEqual(f.counted(), [], JSON.stringify(batch));
+  assert.equal(batch.attempted, 0);
+  assert.equal(batch.error?.code, 'PROTOCOL_INPUT_CONFLICT', JSON.stringify(batch));
+  assert.deepEqual(batch.error.details.refused_steps.map(row => [row.id, row.code]), [['cancel', 'PROTOCOL_INPUT_CONFLICT']]);
+  assert.ok(!batch.error.details.held_steps.some(row => row.id === 'cancel'));
+  assert.ok(!JSON.stringify(batch).includes('notes:v1:'), 'the refusal holds no digest');
 });

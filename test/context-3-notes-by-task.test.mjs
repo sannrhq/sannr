@@ -585,14 +585,15 @@ test('an operation identifier carrying a machine path or a credential shape is w
   const ctx = JSON.parse(readFileSync(file, 'utf8'));
   // Composed at run time: no machine absolute path is written in this file.
   const machinePath = ['', 'Users', 'alice', 'private'].join('/');
-  for (const [id, operation] of [['unsafe-path', `GET ${machinePath}`], ['unsafe-secret', 'GET /sk_live_ABCDEFGH12345678']])
+  for (const [id, operation] of [['unsafe-path', `GET ${machinePath}`], ['unsafe-secret', 'GET /sk_live_ABCDEFGH12345678'],
+    ['unsafe-separator', `GET /orders/x${String.fromCharCode(0x2028)}marker-separator`]])
     ctx.api_context.operations[id] = { identity: { operation, provider: `${origin}/orders`, protocol: 'http', environment: 'local', stack: 'orders' },
       observations: [{ basis: 'authored', notes: ['A scoped lesson.'] }] };
   writeFileSync(file, JSON.stringify(ctx));
   await run(f, ['connect', '--json']);
   const block = blockOf(read(f, 'AGENTS.md'));
-  assert.ok(!block.includes(machinePath) && !block.includes('sk_live_'));
-  assert.match(block, /- 2 operations with notes not listed because the identifier is unsafe/);
+  assert.ok(!block.includes(machinePath) && !block.includes('sk_live_') && !block.includes('marker-separator'));
+  assert.match(block, /- 3 operations with notes not listed because the identifier is unsafe/);
 });
 
 test('the lookup leaves out superseded and retired notes and counts the notes it withholds', async () => {
@@ -852,4 +853,59 @@ test('a hard-linked reference is refused and nothing is registered', async t => 
   assert.equal(refused.error.code, 'REFERENCE_HARD_LINK');
   assert.ok(!existsSync(join(f.root, REFERENCES_FILE)) || !read(f, REFERENCES_FILE).includes('hard-copy'),
     'nothing is written to the registry');
+});
+
+// N1: a store with no knowledge file contributes nothing to the topic lookup
+// and is not an error, through the CLI and through api_note_context.
+function bareRepository() {
+  const root = join(scratch, `bare-${++copies}`), home = join(scratch, `bare-home-${copies}`);
+  mkdirSync(join(root, 'docs'), { recursive: true }); mkdirSync(home);
+  spawnSync('git', ['init', '-q'], { cwd: root });
+  return { root, home };
+}
+
+test('the topic lookup in a repository with nothing set up answers with zero matches, exit 0, CLI and MCP', async () => {
+  const f = bareRepository();
+  const out = await search(f, 'refund');
+  assert.equal(out.code, 0);
+  assert.equal(out.value.total, 0);
+  const viaMcp = await mcpSearch(f, { search: 'refund' });
+  assert.notEqual(viaMcp.isError, true, JSON.stringify(viaMcp.result));
+  assert.equal(viaMcp.result.error, undefined);
+  assert.equal(viaMcp.result.total, 0);
+});
+
+test('the topic lookup in a repository connected with no stack finds a registered reference, CLI and MCP', async () => {
+  const f = bareRepository();
+  writeFileSync(join(f.root, RUNBOOK), '# Runbook\n\nRotate the key before a replay. marker-bare-reference\n');
+  await run(f, ['connect', '--json'], { code: null });
+  // reference add saves the reference here and then exits 1 (CONTEXT_UNAVAILABLE)
+  // because the block cannot be refreshed without a stack (recorded, not ruled).
+  await run(f, ['reference', 'add', RUNBOOK, '--title', 'Runbook'], { code: null });
+  assert.ok(read(f, REFERENCES_FILE).includes(RUNBOOK), 'the reference is registered');
+  const out = await search(f, 'marker-bare-reference');
+  assert.equal(out.code, 0, out.stdout + out.stderr);
+  assert.ok(out.value.matches.some(match => match.kind === 'reference' && match.path === RUNBOOK), out.stdout);
+  const viaMcp = await mcpSearch(f, { search: 'marker-bare-reference' });
+  assert.equal(viaMcp.result.error, undefined, JSON.stringify(viaMcp.result));
+  assert.ok(viaMcp.result.matches.some(match => match.kind === 'reference' && match.path === RUNBOOK), JSON.stringify(viaMcp.result));
+});
+
+test('the topic lookup finds a stack\'s note when another stack\'s knowledge file is missing, CLI and MCP', async () => {
+  const f = fixture();
+  const billing = join(f.root, '.sannr', 'stacks', 'billing', 'sannr.json');
+  assert.ok(existsSync(billing));
+  rmSync(billing);
+  const out = await search(f, 'marker-orders-post');
+  assert.equal(out.code, 0, out.stdout + out.stderr);
+  assert.ok(out.value.matches.some(match => match.kind === 'operation-note' && match.stack === 'orders' && match.operation === 'POST /orders'), out.stdout);
+  const named = await search(f, 'marker-orders-post', '--stack', 'orders');
+  assert.equal(named.code, 0);
+  assert.equal(named.value.total, 1);
+  const missingOnly = await search(f, 'marker-billing-refund', '--stack', 'billing');
+  assert.equal(missingOnly.code, 0, missingOnly.stdout + missingOnly.stderr);
+  assert.equal(missingOnly.value.total, 0);
+  const viaMcp = await mcpSearch(f, { search: 'marker-orders-post' });
+  assert.equal(viaMcp.result.error, undefined, JSON.stringify(viaMcp.result));
+  assert.ok(viaMcp.result.matches.some(match => match.kind === 'operation-note' && match.stack === 'orders'), JSON.stringify(viaMcp.result));
 });

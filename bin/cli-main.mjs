@@ -3774,8 +3774,10 @@ async function cmdShow(argv) {
     // inventory and observation counts cannot invent a second grading rule.
     const map = buildApiMapModel(root, { environment, learnedReasons: false });
     const scopedRead = queryOperationContext(root, { stack: currentStackScope().stack }, { maxItems: 100, maxBytes: 1024 * 1024 });
-    // A stored operation key the instruction block withholds is withheld here
-    // too, in every format, and counted as the map counts a withheld key.
+    // A stored operation key that is unsafe to print (printableOperationKey: a
+    // line break, a control or format character, a credential shape) is
+    // withheld here in every format, and counted as the map counts a withheld
+    // key. Routes under /Users, /home or /tmp are listed.
     const unprintable = new Set();
     const printable = op => { if (typeof op !== "string" || printableOperationKey(op)) return true; unprintable.add(op); return false; };
     const scoped = { ...scopedRead,

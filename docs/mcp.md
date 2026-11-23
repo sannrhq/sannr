@@ -539,7 +539,9 @@ before anything is sent, with the notes in `known` and the current digest in
 `error.details.notes_digest`; the same request with that `notes_digest` goes
 through. Batch steps carry their own `notes_digest`; a batch with held steps is
 refused before anything is sent when the client can know the hold before the
-batch runs, listing every such step in `error.details.held_steps`; a step
+batch runs, listing every such step in `error.details.held_steps` (a step
+whose notes do not fit in the refusal carries no digest there: read it with
+`api_note_context`, or send a protocol step on its own); a step
 whose target depends on a captured value is refused up front with
 `NOTES_TARGET_UNRESOLVED` and no digest unless it carries one, and a step that
 carried a digest and is still held when it runs is refused with the steps

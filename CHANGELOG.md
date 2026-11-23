@@ -66,7 +66,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
   another path on the same host is no longer followed when the destination
   has saved notes or its stack has a stack fact (`NOTES_HOLD_REDIRECT_REFUSED`;
   one request carries one digest, so send the write to the destination
-  instead); inside a batch the refusal counts that step among the steps sent.
+  instead), unless the request's digest is the destination's; inside a batch
+  the refusal counts that step among the steps sent.
   Every existing refusal, the production
   write refusal included, still applies first. Saved suites, `verify`,
   `learn`, `doctor`, map probes and the Workbench Request view are not held.
