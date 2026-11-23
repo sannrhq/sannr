@@ -191,7 +191,7 @@ operation it found and gives no digest.
   input). Nothing is sent before a hold the client can know before the batch
   runs; it predicts nothing a captured value decides. One refusal, `WRITE_HELD_FOR_NOTES` with `attempted: 0`, lists
   every held step in `error.details.held_steps` (index, phase, id, code,
-  operation and `notes_digest`), with one capped `known` per distinct
+  operation and, where its notes are shown, `notes_digest`), with one capped `known` per distinct
   operation in `error.details.known` keyed by digest; the whole refusal stays
   within the token budget. A refusal gives a step's `notes_digest` only with
   that step's notes: a held step whose notes do not fit is still listed with
@@ -200,17 +200,37 @@ operation it found and gives no digest.
   `show` for an HTTP operation, which return the notes and the digest
   together, or the step sent on its own for a protocol call. Resend the batch
   with each step carrying its own `notes_digest`.
-  - A protocol step the run refuses from its own input and plan is refused
-    by the pre-check with the same code, from the same function:
-    `PROTOCOL_INPUT_CONFLICT` (`websocket` options on a GraphQL call that is
-    not a subscription), `PROTOCOL_HEADER_ASSERTION_UNSUPPORTED` (a header
-    `expect` on gRPC, WebSocket or a GraphQL subscription), and an operation
-    name that cannot be a saved-context identity (a control or format
-    character, a credential shape, more than 512 characters;
-    `CONTEXT_INPUT_INVALID` for a zero-width or control character). When the
-    hold could apply to the step, the batch is refused up front under that
-    code with the step in `refused_steps` and no digest for it; nothing is
-    sent.
+  - The pre-check gives the run's own refusal, before anything is sent and
+    with no digest offered for the step, for this named list, from the
+    functions the run calls, on the arguments the step is sent with (`expect`
+    included): the step's own refusal (placeholders, a protocol input object
+    without `protocol`, `wait_for`); target resolution; the target's
+    configuration and production refusals; protocol input; the plan refusals
+    (`PROTOCOL_INPUT_CONFLICT`: `websocket` options on a GraphQL call that is
+    not a subscription; `PROTOCOL_HEADER_ASSERTION_UNSUPPORTED`: a header
+    `expect` on gRPC, WebSocket or a GraphQL subscription); an adapter's
+    refusal of the step's input; the identity refusal; and `save_to` outside
+    the project (`SAVE_TO_OUTSIDE_PROJECT`, or `SAVE_TO_UNSAFE_PATH` for a
+    linked destination, the codes a single request gives with nothing sent).
+  - For a JSON-RPC method name: a control character or more than 200
+    characters is the adapter's refusal, `JSONRPC_METHOD_INVALID`; a format
+    character (a zero-width character or a direction override, say) or a line
+    or paragraph separator (U+2028, U+2029) is the identity refusal,
+    `CONTEXT_INPUT_INVALID`; a credential shape is `CONTEXT_SECRET_REFUSED`.
+    A protocol step whose plan cannot be made for any other reason (a missing
+    protocol package) is refused up front as `NOTES_TARGET_UNRESOLVED`.
+  - A protocol step refused for its input, its plan, its adapter or its
+    identity, and a write step refused for `save_to`, refuses the whole batch
+    up front (the step in `refused_steps`, nothing sent) whenever its stack
+    holds any note or fact that could hold it, a fact limited to another
+    operation included: in such a stack a batch whose earlier steps would
+    have been sent before that step is refused now sends nothing. In a stack
+    with nothing saved that could hold it, the batch runs and the step is
+    refused at its turn.
+  - The limit: a step the run refuses for a reason not on that list fails when
+    it runs, as any batch step does when the hold is off: the writes before it
+    have been sent, and a digest offered for it was the right one for its
+    operation.
   - `method`, `path`, `stack`, `environment`, `upstream`, `protocol` and
     `notes_digest` must be strings in every step and in a single request; a
     value of another type refuses the whole call with
@@ -242,9 +262,10 @@ operation it found and gives no digest.
     pre-check calls the same functions on the arguments the step is sent
     with. Such a step is never held for
     notes. When the batch also has a held step, it is refused on the first
-    attempt under the first refused step's code, listing the held steps with
-    their digests in `held_steps` and the refused steps with the run's codes
-    in `refused_steps`; nothing is sent. A batch with no held step runs as
+    attempt under the first refused step's code, listing the held steps in
+    `held_steps` (each with its digest only where its notes are in the
+    refusal, as above) and the refused steps with the run's codes in
+    `refused_steps`; nothing is sent. A batch with no held step runs as
     before and the run refuses that step at its turn.
   - A write step that the pre-check cannot check at all is refused up front
     with `NOTES_TARGET_UNRESOLVED` when a stack it could reach has knowledge
@@ -275,9 +296,17 @@ operation it found and gives no digest.
   nothing, not even an OAuth token request, and records no observation.
 - A redirect that would carry the write to another operation with saved notes
   is not followed (`NOTES_HOLD_REDIRECT_REFUSED`) unless the digest is that
-  operation's. Inside a batch the refusal counts its own step in
-  `sent_steps` (its request reached the server); send the write to the
-  destination with the digest the refusal gives.
+  operation's. The refusal gives the destination's `notes_digest` only with
+  the destination's notes: `error.details.known`, keyed by that digest,
+  carries what a write held at the destination carries (its notes and its
+  stack's applicable facts, with the same caps and receipts), alone and as a
+  batch step's result; the result's own `known` stays the context of the
+  operation the request reached. When the destination's knowledge cannot be
+  carried (stack facts withheld until reviewed), the refusal gives no digest
+  and says to read the destination with `api_note_context` or `show`. Inside
+  a batch the refusal counts its own step in `sent_steps` (its request
+  reached the server); send the write to the destination with the digest the
+  refusal gives.
 - Saved suites (`suite run`), `verify`, `learn`, `doctor`, map probes, imports
   and captures are not held: they run saved material with nobody reading in
   between. The Workbench's Request view is not held (a person sends it). One

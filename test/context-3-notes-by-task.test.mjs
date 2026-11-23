@@ -586,14 +586,18 @@ test('an operation identifier carrying a machine path or a credential shape is w
   // Composed at run time: no machine absolute path is written in this file.
   const machinePath = ['', 'Users', 'alice', 'private'].join('/');
   for (const [id, operation] of [['unsafe-path', `GET ${machinePath}`], ['unsafe-secret', 'GET /sk_live_ABCDEFGH12345678'],
-    ['unsafe-separator', `GET /orders/x${String.fromCharCode(0x2028)}marker-separator`]])
+    ['unsafe-separator', `GET /orders/x${String.fromCharCode(0x2028)}marker-separator`], ['safe-sibling', 'GET /orders/marker-safe-sibling']])
     ctx.api_context.operations[id] = { identity: { operation, provider: `${origin}/orders`, protocol: 'http', environment: 'local', stack: 'orders' },
       observations: [{ basis: 'authored', notes: ['A scoped lesson.'] }] };
   writeFileSync(file, JSON.stringify(ctx));
   await run(f, ['connect', '--json']);
   const block = blockOf(read(f, 'AGENTS.md'));
   assert.ok(!block.includes(machinePath) && !block.includes('sk_live_') && !block.includes('marker-separator'));
-  assert.match(block, /- 3 operations with notes not listed because the identifier is unsafe/);
+  // Withholding is selective: the index lists the printable sibling planted
+  // beside the three unsafe keys, and none of the three.
+  const listed = [...block.matchAll(/^- `([^`]+)` \(\d+\)$/gmu)].map(match => match[1]);
+  assert.ok(listed.includes('GET /orders/marker-safe-sibling'), block);
+  assert.equal(listed.filter(op => op.includes('sk_live_') || op.includes(machinePath) || op.includes('marker-separator')).length, 0);
 });
 
 test('the lookup leaves out superseded and retired notes and counts the notes it withholds', async () => {
