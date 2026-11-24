@@ -147,7 +147,7 @@ test('QA successful recovery supersedes only generated auth-failure notes and re
   const pointer = readFileSync(join(f.root, 'AGENTS.md'), 'utf8');
   assert.match(pointer, /1 operation; 0 written, 0 observed, 0 asserted, 1 verified/);
   assert.ok(pointer.includes('Keep this authored instruction.'));
-  assert.ok(pointer.includes(authored));
+  assert.ok(!pointer.includes(authored), 'no note text enters the block');
   assert.ok(!pointer.includes('Authentication failed'));
   assert.deepEqual(evidence(f.root).map(record => record.response.status).sort(), [200, 401]);
 });

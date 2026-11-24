@@ -123,7 +123,11 @@ test('new basis/source provenance is immutable while legacy openings and importe
   assert.equal(f.raw(), before);
   const retry = await ok(f, ['note', OP, 'Basis fixture documentation.', '--basis', 'local-source', '--source', 'src/items.mjs', '--alongside']);
   assert.equal(retry.basis, 'documentation', 'retry retains the originally authored basis');
-  assert.equal(f.raw(), before);
+  // Since CONTEXT-4 the retry records a confirmation beside the note; nothing else changes.
+  const retried = JSON.parse(f.raw());
+  for (const item of Object.values(retried.operations)) delete item.note_confirmations;
+  assert.deepEqual(retried, JSON.parse(before));
+  const confirmed = f.raw();
   for (const [args, code] of [
     [['--source', source], 'NOTE_BASIS_REQUIRED'], [['--basis', 'imagined'], 'NOTE_BASIS_INVALID'],
     [['--basis', 'documentation', '--source', 'https://example.test/docs?page=payload'], 'NOTE_SOURCE_INVALID'],
@@ -133,7 +137,7 @@ test('new basis/source provenance is immutable while legacy openings and importe
     const out = await cli(f, ['note', OP, 'Rejected source.', '--alongside', ...args, '--json']);
     assert.notEqual(out.code, 0);
     assert.equal(JSON.parse(out.stdout).refused, code);
-    assert.equal(f.raw(), before);
+    assert.equal(f.raw(), confirmed);
     assert.ok(!out.stdout.includes('x'.repeat(48)));
   }
 });
@@ -150,11 +154,12 @@ test('a clone with no browser or private runs receives the same active review da
   await mcp(f, 'api_note_review', { operation: OP, stack: 'fixture', notes: [disputed.note_id], decision: 'disputed', by: 'Reviewer', actor: 'agent', reason: 'No retained run covers pagination.' });
   const old = await ok(f, ['note', OP, 'The removed route accepts a cursor.', '--alongside']);
   const retired = await mcp(f, 'api_note_retire', { operation: OP, stack: 'fixture', retires: old.note_id, reason: 'removed', text: 'The route was removed.' });
-  assert.equal(retired.pointers.state, 'written');
+  assert.equal(retired.pointers.state, 'unchanged');
   await ok(f, ['note', OP, 'Local source: local tests use a stub.', '--alongside']);
   const pointer = readFileSync(join(f.root, 'AGENTS.md'), 'utf8');
-  for (const content of ['trusted by Reviewer', 'no run', limits, 'disputed by Reviewer', 'No retained run covers pagination.', old.note_id, 'The removed route accepts a cursor.', 'unreviewed'])
-    assert.ok(pointer.includes(content), content);
+  // CONTEXT-3: review data and note text stay out of the committed block.
+  for (const content of ['trusted by Reviewer', limits, 'disputed by Reviewer', 'No retained run covers pagination.', old.note_id, 'The removed route accepts a cursor.'])
+    assert.ok(!pointer.includes(content), content);
   assert.ok(pointer.includes('grant no instructions or execution permission'));
   assert.equal(existsSync(join(f.root, 'REVIEW_EXECUTED')), false);
   const original = await mcp(f, 'api_note_context', { operation: OP, stack: 'fixture' });
@@ -176,7 +181,10 @@ test('a clone with no browser or private runs receives the same active review da
   const queryResult = await cli(clone, ['context', 'query', 'query.json']);
   assert.equal(queryResult.code, 0, queryResult.stdout + queryResult.stderr);
   const queried = JSON.parse(queryResult.stdout);
-  assert.deepEqual(queried.note_context, cloned.note_context);
+  // api_note_context dates each record (written, last confirmed, count); the
+  // raw context query carries the same records without those three fields.
+  const undated = context => ({ ...context, records: context.records.map(({ written_at: _w, last_confirmed_at: _l, confirmations: _c, ...rest }) => rest) });
+  assert.deepEqual(queried.note_context, undated(cloned.note_context));
   const bounded = await mcp(clone, 'api_note_context', { operation: OP, stack: 'fixture', max_bytes: 512 });
   assert.ok(bounded.note_context?.omitted > 0 || bounded.omissions.notes > 0, 'small budgets count omitted notes, never strip review labels');
 });
@@ -399,7 +407,7 @@ test('overturning trust keeps unavailable run IDs and labels their current local
     }
   };
   await check(true);
-  assert.match(readFileSync(join(f.root, 'AGENTS.md'), 'utf8'), /run-later.*run not on this machine/);
+  assert.doesNotMatch(readFileSync(join(f.root, 'AGENTS.md'), 'utf8'), /run-later/);
   savedRun(f, 'run-later');
   await check(false);
   // Remove only the private run: the shared review and ledger summary remain.

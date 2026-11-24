@@ -462,10 +462,12 @@ test('a reviewer works through the Review screen and agents read her decisions w
     const pointer = readFileSync(join(root, 'AGENTS.md'), 'utf8');
     // Committed instructions keep the decision; the private inbox status stays out of them.
     const decisionOnly = label => label.replace(/ · request: [^·]*(?= · |$)/u, '');
+    // CONTEXT-3: committed instructions list noted operations, not notes or
+    // their review labels; agents read the labels above through show and MCP.
     assert.match(labels.get(N7.note_id), /· request: acknowledged ·/u);
-    for (const label of [labels.get(N1.note_id), labels.get(N2.note_id), labels.get(N7.note_id)]) assert.ok(pointer.includes(decisionOnly(label)), label);
+    for (const label of labels.values()) assert.ok(!pointer.includes(decisionOnly(label)), label);
     assert.ok(!pointer.includes('request: acknowledged'));
-    assert.ok(pointer.includes('trusted by Maya · no run · limits: "as documented"'), 'the billing decisions reach AGENTS.md too');
+    assert.ok(pointer.includes(`- \`${WIDGET}\` (`), 'the noted operation is listed in AGENTS.md');
 
     const delivered = await read(() => apiRequest({ stack: 'orders', path: '/widgets/w1', capture_context: false }, { API_BUDGET: '16000' }));
     assert.equal(delivered.status, 200);

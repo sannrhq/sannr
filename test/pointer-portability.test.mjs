@@ -391,18 +391,12 @@ test("unsafe machine-local gotchas stay verbatim in knowledge but not in managed
 
     const block = blockIn(dir);
     for (const note of unsafe) assert.ok(!block.includes(note), `unsafe gotcha leaked: ${note}`);
-    // Safe prose reaches the block flattened to one line (control characters
-    // become spaces, comment markup is made visible): a newline inside a note
-    // is the heading injection lib/block-text.mjs exists to remove. The
-    // knowledge file keeps the literal text; the block carries its safe form.
-    for (const note of safeNotes)
-      assert.ok(block.includes(blockText(note)), `safe prose was mistaken for a machine path: ${note}`);
-    for (const [operation, note] of safeOperations) {
-      assert.ok(block.includes(`- \`${operation}\` — ${note}`),
-        `safe structured operation ID was redacted: ${operation}`);
-    }
-    assert.match(block, new RegExp(`${unsafe.length} gotchas? omitted[^.]*machine-local`, "i"),
-      "unsafe gotchas were silently dropped instead of counted for the reader");
+    // CONTEXT-3: no note text reaches the block, safe or not. Structured
+    // operation identifiers still do, unredacted, with their note counts.
+    for (const note of safeNotes) assert.ok(!block.includes(blockText(note)), `note text entered the block: ${note}`);
+    assert.ok(block.includes(`- \`GET /json\` (${unsafe.length + safeNotes.length})`), block);
+    for (const [operation] of safeOperations)
+      assert.ok(block.includes(`- \`${operation}\` (1)`), `safe structured operation ID was redacted: ${operation}`);
     assertNoMachinePath(block);
   } finally {
     rmSync(base, { recursive: true, force: true });

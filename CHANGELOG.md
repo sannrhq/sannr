@@ -10,6 +10,88 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) headings,
 
 ## [Unreleased]
 
+- Saved notes now arrive by task instead of in every session. The managed
+  block that `connect` writes into `AGENTS.md` and `CLAUDE.md` no longer
+  copies any saved note, stack fact or inherited lesson; it lists each stack's
+  counts, the operations that have notes (identifier and count, at most 20 per
+  stack and 60 in all), how many reference files are registered (never their
+  paths or titles), and how to fetch them. A request still returns its
+  operation's notes in `known`. New `context search "<text>"` (and
+  `api_note_context` with `search` in place of `operation`) looks up every
+  kind of saved note and registered reference by topic, across stacks unless
+  one is named, and sends no request; when no entry holds every word it falls
+  back to entries holding some of them, ranked, and says so. New
+  `reference add|list|remove` registers local files the lookup may read
+  (`.sannr/references.json`: path, title and stack, never the text; confined to
+  the repository, at most 256 KiB, single-link, never under `.git/`, a private
+  or product-written `.sannr/` location, a dotenv file or a Git-ignored path,
+  refused if it holds a credential); for a reference file the lookup returns
+  the path and the numbers of the matching lines, never the file's text. A `CLAUDE.md` with an `@AGENTS.md`
+  import line no longer gets a second copy of the block when `AGENTS.md` holds
+  it, and a copy an earlier version wrote there is removed on the next
+  refresh. Mixed versions: an older client that saves a note re-inlines note
+  text into the block until it is upgraded; the next refresh by this version
+  removes it.
+- **Behavior change for existing users:** a write an agent issues by hand to
+  an operation with saved notes is now held until the notes have been read. A
+  POST, PUT, PATCH or DELETE through `api_request`, `request`,
+  `api_saved_requests` or `saved run`, or a protocol call whose effect is not
+  a declared read (JSON-RPC calls included) through `api_request` or
+  `protocol`, to an operation with active notes or applicable stack facts
+  refuses with `WRITE_HELD_FOR_NOTES` before anything is sent. The refusal
+  carries the notes in `known` and a `notes_digest`; the same request with
+  `notes_digest` (`--notes-digest` on `request`) is sent. On a stack with no
+  contract the refusal names the operation as `known` does, with a saved
+  request's short sensitive path value already removed. `api_note_context`
+  and `show "<METHOD /path>"` return the same digest, so reading first avoids
+  the refusal. A digest is refused again with `NOTES_DIGEST_STALE` after a
+  note is added, superseded, retired or given a new review decision, and
+  only then: it is the same at every token budget and on every machine. An
+  authored lesson (`context capture`, `api_context_record`) holds no write
+  and is not part of the digest; it is still delivered in `known.scoped`. In a
+  batch, nothing is sent before a hold the client can know before the batch
+  runs: every such held step, protocol steps included, is listed once, with
+  its digest only where its notes fit in the refusal (a step left out says how
+  to read its notes). A step the run would refuse for a reason on a named list
+  (its own input, its target, its protocol input, plan, adapter or identity,
+  `save_to` outside the project) is refused before anything is sent, with no
+  digest for it; any other late refusal fails when the step runs, as on
+  earlier versions. A write step whose target depends on a value captured in the batch
+  is not predicted: it is refused up front with `NOTES_TARGET_UNRESOLVED` and
+  no digest when a stack it could reach has knowledge that could hold it,
+  unless it carries the digest of the operation it will reach. A step that
+  carried a digest and is still held when it runs is refused with the steps
+  already sent named. A `method`, `path`, `stack`, `environment`, `upstream`,
+  `protocol` or `notes_digest` that is not a string now refuses the call with
+  `REQUEST_FIELD_INVALID` instead of being converted (a `path` of
+  `["/orders"]` used to be sent as `/orders`). A `method` of `null` is now
+  read as absent, so a `GET` is sent (it used to fail with `TRANSPORT_FAILED`
+  and send nothing), and a batch step with no `path` now goes to the stack's
+  base URL (it used to go to `/undefined`). A write the server redirects to
+  another path on the same host is no longer followed when the destination
+  has saved notes or its stack has a stack fact (`NOTES_HOLD_REDIRECT_REFUSED`;
+  one request carries one digest, so send the write to the destination
+  instead), unless the request's digest is the destination's; the refusal
+  carries the destination's notes with its digest, and inside a batch it
+  counts that step among the steps sent. A `save_to` outside the project is
+  now refused as `SAVE_TO_OUTSIDE_PROJECT` with nothing sent (it was reported
+  as `TRANSPORT_FAILED`), and a protocol operation name with U+2028 or U+2029
+  is refused as `CONTEXT_INPUT_INVALID`.
+  Every existing refusal, the production
+  write refusal included, still applies first. Saved suites, `verify`,
+  `learn`, `doctor`, map probes and the Workbench Request view are not held.
+  To turn the hold off, commit `"holdWritesForNotes": false` in
+  `.sannr/defaults.json`, but only once every client that reads the
+  repository is this version or later: 0.1.0-beta.1 refuses that key.
+- Saving a note that matches an active note no longer does nothing: it records
+  a confirmation on the saved note (when, by whom and any `--evidence` run)
+  and adds no note. Its receipt still says `unchanged` and adds
+  `confirmed: true`. `note "<METHOD /path>" --confirms <note-id>` confirms a
+  note whose wording differs. `show` and `api_note_context` give each note the
+  date it was written, the date it was last confirmed and how many times. A
+  confirmation never changes a note's id, text, evidence, evidence class or
+  review label, and leaves the history check clean; 0.1.0-beta.1 reads and
+  writes a store that holds confirmations.
 - A sensitive saved-request input no longer corrupts the stored record. A
   value shorter than six characters (an order id `1` typed in the Workbench's
   Request view, or passed to `saved run` or `api_saved_requests`) was removed

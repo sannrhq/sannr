@@ -24,6 +24,13 @@ const EXTRA = 'This historical explanation remains an author claim; the cited re
 const FULL_DIGEST = /^sha256:[a-f0-9]{64}$/u;
 const TOKEN = 'local-fixture-credential-not-for-promotion';
 const raw = fixture => readFileSync(fixtureContextFile(fixture.root), 'utf8');
+// Since CONTEXT-4 a duplicate records a confirmation beside the note history.
+// Everything else in the store must stay byte-for-byte as it was.
+const withoutConfirmations = fixture => {
+  const value = JSON.parse(raw(fixture));
+  for (const item of Object.values(value.operations ?? {})) delete item.note_confirmations;
+  return value;
+};
 const ctx = fixture => JSON.parse(raw(fixture));
 const entry = fixture => ctx(fixture).operations[OP];
 
@@ -95,7 +102,8 @@ test('QA a historical alpha.7 claim survives correction, active pointers refresh
   writeFileSync(join(f.root, 'AGENTS.md'), 'A team-owned instruction remains here.\n');
   await success(f, ['connect', '--agents', '--no-skills']);
   const initial = await firstNote(f), prior = structuredClone(entry(f));
-  assert.match(readFileSync(join(f.root, 'AGENTS.md'), 'utf8'), /Alpha\.7: learn omitted/);
+  // CONTEXT-3: the block lists the noted operation, never the note text.
+  assert.ok(readFileSync(join(f.root, 'AGENTS.md'), 'utf8').includes(`- \`${OP}\` (1)`));
 
   const refusal = await assertRefusedWithoutWrite(f, ['note', OP, NEW], /NOTE_RELATION_REQUIRED/u);
   assert.ok(refusal.output.includes(initial.note.id), 'refusal supplies the existing selector');
@@ -114,8 +122,8 @@ test('QA a historical alpha.7 claim survives correction, active pointers refresh
   assert.equal(output.note_id, current.id);
   assert.notEqual(output.pointers.state, 'failed');
   const pointer = readFileSync(join(f.root, 'AGENTS.md'), 'utf8');
-  assert.ok(pointer.includes(NEW), pointer);
-  assert.ok(!pointer.includes(OLD), 'default guidance must not resurrect the historical claim');
+  assert.ok(pointer.includes(`- \`${OP}\` (1)`), pointer);
+  assert.ok(!pointer.includes(NEW) && !pointer.includes(OLD), 'no note text enters the block');
   assert.ok(pointer.includes('A team-owned instruction remains here.'));
 
   const bytes = raw(f);
@@ -129,16 +137,17 @@ test('QA a historical alpha.7 claim survives correction, active pointers refresh
   assert.ok(fullHuman.stdout.includes(NEW) && fullHuman.stdout.includes(OLD));
 });
 
-test('QA alongside records an unresolved competing claim and an active duplicate remains a no-op', async t => {
+test('QA alongside records an unresolved competing claim and an active duplicate adds no note and needs no relationship', async t => {
   const f = scratch(t), initial = await firstNote(f);
   await success(f, ['note', OP, EXTRA, '--alongside']);
   const shown = await show(f);
   assert.deepEqual(shown.active_notes, [OLD, EXTRA]);
   assert.equal(shown.note_history.history.length, 0, 'alongside does not silently adjudicate truth');
   assert.equal(record(shown, OLD).id, initial.note.id);
-  const bytes = raw(f);
+  const before = JSON.parse(raw(f));
   await success(f, ['note', OP, OLD]);
-  assert.equal(raw(f), bytes, 'an already active note needs no relationship choice');
+  assert.deepEqual(withoutConfirmations(f), before, 'an already active note needs no relationship choice');
+  assert.equal(entry(f).note_confirmations[initial.note.id].count, 1);
   assert.equal(entry(f).verified_at, null, 'authored explanations are not execution verification');
 });
 
@@ -164,7 +173,7 @@ test('QA pointer failure is separate from a successful knowledge save and an exa
   assert.equal(raw(f), bytes);
   assert.ok(JSON.parse(retry.stdout).unchanged);
   const repaired = readFileSync(join(f.root, 'AGENTS.md'), 'utf8');
-  assert.ok(repaired.includes(NEW) && !repaired.includes(OLD));
+  assert.ok(repaired.includes(`- \`${OP}\` (1)`) && !repaired.includes(NEW) && !repaired.includes(OLD));
   assert.ok(repaired.includes('Keep the team instruction.'));
 });
 
@@ -557,16 +566,17 @@ test('QA a phrase resembling a generated failure remains authored when learn lat
 test('QA an acknowledged unattributed duplicate preserves its original unknown author and does not attach new evidence', async t => {
   const f = scratch(t, { operations: { [OP]: { notes: [OLD], notes_provenance: [null], notes_superseded: [null] } } });
   await acknowledge(f);
-  const original = await show(f), bytes = raw(f);
+  const original = await show(f), before = JSON.parse(raw(f));
   const missingId = 'run-44444444-4444-4444-8444-444444444444';
   const duplicate = JSON.parse((await success(f, ['note', OP, OLD, '--evidence', missingId])).stdout);
-  assert.ok(duplicate.unchanged, 'the existing active claim remains a no-op');
+  assert.ok(duplicate.confirmed, 'the existing active claim adds no note; it is confirmed');
   assert.equal(duplicate.note_id, record(original, OLD).id);
   assert.equal(duplicate.by, null, 'the receipt must not manufacture attribution from the current Git author');
   assert.equal(duplicate.at, null, 'the receipt must not present the retry date as the original recorded date');
   assert.deepEqual(duplicate.evidence, [], 'new attempted evidence references do not become saved references on a duplicate');
-  assert.match(duplicate.evidence_attachment, /unchanged/u);
-  assert.equal(raw(f), bytes);
+  assert.equal(duplicate.confirmed, true);
+  assert.deepEqual(duplicate.confirmation_evidence.map(ref => ref.run_id), [missingId], 'the requested run is attached to the confirmation');
+  assert.deepEqual(withoutConfirmations(f), before);
   assert.deepEqual(entry(f).notes_provenance, [null]);
   assert.equal(entry(f).note_integrity.prior_integrity, 'unknown');
 });
@@ -578,7 +588,7 @@ test('QA accepting a reviewed edited relationship refreshes active managed guida
   const initial = await firstNote(f);
   await success(f, ['note', OP, NEW, '--supersedes', initial.note.id]);
   const pointerBefore = readFileSync(join(f.root, 'AGENTS.md'), 'utf8');
-  assert.ok(pointerBefore.includes(NEW) && !pointerBefore.includes(OLD));
+  assert.ok(pointerBefore.includes(`- \`${OP}\` (1)`) && !pointerBefore.includes(NEW) && !pointerBefore.includes(OLD));
   // An external, structurally valid reversal is still suspect until explicitly
   // reviewed. Acknowledgement accepts these bytes, not their explanatory truth.
   mutate(f, current => {
@@ -591,10 +601,10 @@ test('QA accepting a reviewed edited relationship refreshes active managed guida
   assert.equal(readFileSync(join(f.root, 'AGENTS.md'), 'utf8'), pointerBefore);
   const command = ['review', '--accept-notes', OP, '--if-notes', edited.note_history.digest, '--json'];
   const accepted = JSON.parse((await success(f, command)).stdout);
-  assert.equal(accepted.pointers.state, 'written');
+  assert.equal(accepted.pointers.state, 'unchanged');
   assert.deepEqual(accepted.note_history.active.map(note => note.text), [OLD]);
   const refreshed = readFileSync(join(f.root, 'AGENTS.md'), 'utf8');
-  assert.ok(refreshed.includes(OLD) && !refreshed.includes(NEW), 'review refreshes the now accepted active projection');
+  assert.ok(refreshed.includes(`- \`${OP}\` (1)`) && !refreshed.includes(OLD) && !refreshed.includes(NEW), 'the refreshed block counts the accepted active projection');
   assert.ok(refreshed.includes('A team-owned instruction remains here.'));
   const bytes = raw(f), receipts = structuredClone(entry(f).note_integrity.acknowledgements);
   const retry = JSON.parse((await success(f, command)).stdout);

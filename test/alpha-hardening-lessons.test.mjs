@@ -10,7 +10,8 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PRODUCT, HOME_ENV_NAME,  POINTER_BEGIN, POINTER_END, MCP_SERVER_KEY } from "../lib/brand.mjs";
-import { blockText, BLOCK_TEXT_MAX } from '../lib/block-text.mjs';
+import { BLOCK_TEXT_MAX } from '../lib/block-text.mjs';
+import { MAX_INDEXED_OPERATIONS } from '../lib/pointer-context.mjs';
 import { recordGraphContext as recordRaw } from '../lib/graph-record.mjs';
 import { emptyContext, saveContext } from '../lib/context.mjs';
 
@@ -18,7 +19,6 @@ const recordGraphContext = (root,...args) => withFixtureProjection(root, () => r
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const CLI = join(ROOT, 'bin', 'cli.mjs');
 const MANIFEST = LAYOUT.graphManifest;
-const heading = '### inherited lessons (authored, unverified)';
 const lesson = { node: 'acme/web#api', operation: 'GET /accounts', note: 'Pagination uses an opaque cursor; preserve its ordering.' };
 const count = (text, token) => text.split(token).length - 1;
 
@@ -48,29 +48,34 @@ function storedLesson(root) {
   return { ctx, observation, save: () => { writeFileSync(path, JSON.stringify(ctx)); withFixtureProjection(root, () => {}); } };
 }
 
-test('AH-4 an authored api_context_record lesson appears in the inherited unverified managed-block subsection', t => {
+// CONTEXT-3: the managed block counts an inherited lesson against its
+// operation and carries none of its text; the topic lookup returns it scoped.
+test('AH-4 an authored api_context_record lesson is indexed in the managed block and found by topic with its scope', t => {
   const { root, cli, block } = scratch(t);
   const receipt = recordGraphContext(root, lesson);
   assert.equal(receipt.verification, 'external-claim');
   cli(['connect', '--agents']);
   const text = block();
-  assert.ok(text.includes(heading));
-  assert.ok(text.includes(lesson.note));
-  assert.ok(text.includes('`GET /accounts`'));
-  assert.ok(text.includes('`web`') && text.includes('`staging`') && text.includes('`http`'), 'the inherited lesson retains operation, provider, environment and protocol scope');
+  assert.ok(!text.includes(lesson.note));
+  assert.ok(text.includes('- `GET /accounts` (1)'));
+  const found = JSON.parse(cli(['context', 'search', 'opaque cursor']));
+  assert.equal(found.matches[0].kind, 'observation-lesson');
+  assert.equal(found.matches[0].text, lesson.note);
+  assert.deepEqual([found.matches[0].operation, found.matches[0].provider, found.matches[0].environment, found.matches[0].protocol], ['GET /accounts', 'web', 'staging', 'http'],
+    'the inherited lesson retains operation, provider, environment and protocol scope');
 });
 
-test('AH-4 a hand-edited authored lesson is flattened and bounded before entering the managed block', t => {
+test('AH-4 a hand-edited authored lesson cannot plant a heading or its text in the managed block', t => {
   const { root, cli, block } = scratch(t);
   recordGraphContext(root, lesson);
   const stored = storedLesson(root);
   const poisoned = `First line\n\n## injected heading\r\n${'x'.repeat(BLOCK_TEXT_MAX + 400)}`;
   stored.observation.notes = [poisoned]; stored.save();
   cli(['connect', '--agents']);
-  const text = block(), line = text.split('\n').find(value => value.startsWith('- `GET /accounts`'));
-  assert.ok(line?.endsWith(blockText(poisoned)), 'one bounded line carries the flattened lesson');
+  const text = block();
+  assert.ok(text.includes('- `GET /accounts` (1)'));
   assert.doesNotMatch(text, /^## injected heading/mu);
-  assert.ok(line.length < BLOCK_TEXT_MAX + 300);
+  assert.ok(!text.includes('x'.repeat(100)), 'no lesson text enters the block');
 });
 
 test('AH-4 an authored lesson carrying the block delimiter cannot close the block or break regeneration', t => {
@@ -80,7 +85,7 @@ test('AH-4 an authored lesson carrying the block delimiter cannot close the bloc
   stored.observation.notes = [poisoned]; stored.save();
   cli(['connect', '--agents']);
   let text = block();
-  assert.ok(text.includes(blockText(poisoned)), 'comment markup is made visible within the inherited lesson');
+  assert.ok(!text.includes('Reusable claim'), 'no lesson text enters the block');
   assert.equal(count(text, POINTER_BEGIN), 1); assert.equal(count(text, POINTER_END), 1);
   assert.doesNotMatch(text, /^## injected directive/mu);
   cli(['connect', '--agents']);
@@ -117,7 +122,7 @@ test('AH-4 pointer workflow advertises only graph tools enabled by the registere
   assert.doesNotMatch(block(), /api_context/u);
 });
 
-test('AH-4 inherited lessons have an aggregate bound and name omitted entries', t => {
+test('AH-4 operations with inherited lessons have an index bound and name omitted entries', t => {
   const { root, cli, block } = scratch(t);
   recordGraphContext(root, lesson);
   const stored = storedLesson(root), original = Object.values(stored.ctx.api_context.operations)[0];
@@ -130,13 +135,10 @@ test('AH-4 inherited lessons have an aggregate bound and name omitted entries', 
   stored.save();
   cli(['connect', '--agents']);
   const text = block();
-  assert.ok(text.includes(heading));
-  assert.equal(text.split('\n').filter(line => line.startsWith('- `GET /accounts/')).length, 15);
-  // STACKS-2 retains the same 15 delivered facts, but omissions now name the
-  // selected stack and an executable recovery command instead of a store path.
-  assert.match(text, /25 inherited lessons omitted \(per-stack cap 15\)/u);
+  assert.equal(text.split('\n').filter(line => line.startsWith('- `GET /accounts/')).length, MAX_INDEXED_OPERATIONS);
+  assert.match(text, new RegExp(`${40 - MAX_INDEXED_OPERATIONS} more operations with notes omitted`, 'u'));
   assert.match(text, /show --stack fixture/u);
-  assert.ok(text.length < 15 * (BLOCK_TEXT_MAX + 300) + 5000);
+  assert.ok(!text.includes('lesson lesson'), 'no lesson text enters the block');
 });
 
 test('AH-4 a registration that does not launch Node cannot advertise optional context tools', t => {
@@ -157,5 +159,5 @@ test('AH-4 unsafe workstation paths in authored lesson scope cannot enter the ma
   identity.provider = ('/' + 'Users/person/private-provider'); stored.save();
   cli(['connect', '--agents']);
   assert.equal(block().includes(identity.provider), false, 'a hand-edited provider path is not portable metadata');
-  assert.match(block(), /1 inherited lesson omitted/u);
+  assert.ok(!block().includes(lesson.note));
 });

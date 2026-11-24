@@ -82,13 +82,14 @@ test('CONTEXT-2c map and view classify the same evidence once per operation, wit
   assert.match(page, /Content-Security-Policy/);
 });
 
-test('CONTEXT-2c managed headline agrees with the map and preserves operation fact bytes', t => {
+test('CONTEXT-2c managed headline agrees with the map and indexes noted operations without their text', t => {
   const f = fixture(t);
   const block = renderStackContext(f.root, null, { portable: PRODUCT, containsMachineLocalPath: () => false }).join('\n');
   assert.match(block, /4 written, 2 observed, 1 asserted, 1 verified/);
   assert.match(block, /1 written, 0 observed, 0 asserted, 0 verified/);
-  assert.ok(block.includes('- `GET /written` — Keep the existing operation fact.'));
-  assert.ok(block.includes('- `GET /written` — Beta-only operation fact.'));
+  // CONTEXT-3: the block lists noted operations by identifier, never note text.
+  assert.ok(block.includes('- `GET /written` ('));
+  assert.ok(!block.includes('Keep the existing operation fact.') && !block.includes('Beta-only operation fact.'));
   assert.doesNotMatch(block, /8 operations, 1 verified by execution/);
 });
 
@@ -118,7 +119,7 @@ test('CONTEXT-2c a written status claim contradicted by the latest response is f
   const view = buildViewModel(f.root, { generatedAt: f.at, env: f.env });
   assert.match(renderViewHtml(view), /Contradicted.*status/);
   const block = renderStackContext(f.root, null, { portable: PRODUCT, containsMachineLocalPath: () => false }).join('\n');
-  assert.ok(block.includes('- `GET /failed` — Returns status 200.'));
+  assert.ok(!block.includes('Returns status 200.'));
   assert.match(block, /Contradicted authored note.*GET \/failed/);
 });
 

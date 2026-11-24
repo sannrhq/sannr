@@ -93,7 +93,8 @@ test('AH5 seam renamed outside-save variable authorizes only the renamed client 
     const target = ${JSON.stringify(join(outside, 'saved.txt'))};
     delete process.env[${JSON.stringify(renamed.toUpperCase() + '_ALLOW_SAVE_OUTSIDE')}];
     process.env[${JSON.stringify(brand.ALLOW_SAVE_OUTSIDE_ENV_NAME ?? brand.PRODUCT.toUpperCase() + '_ALLOW_SAVE_OUTSIDE')}] = '1';
-    await assert.rejects(apiRequest({ method: 'GET', path: '/', save_to: target }), {code: 'SAVE_TO_OUTSIDE_PROJECT'});
+    const refused = await apiRequest({ method: 'GET', path: '/', save_to: target });
+    assert.equal(refused.error?.code, 'SAVE_TO_OUTSIDE_PROJECT'); assert.equal(refused.mode, 'refused');
     process.env[${JSON.stringify(renamed.toUpperCase() + '_ALLOW_SAVE_OUTSIDE')}] = '1';
     const result = await apiRequest({ method: 'GET', path: '/', save_to: target });
     assert.equal(result.ok, true); assert.equal(readFileSync(target, 'utf8'), 'fixture');`,

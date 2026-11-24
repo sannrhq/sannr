@@ -18,9 +18,55 @@ when active authored or unattributed notes exist, another note requires
 `--supersedes` or `--alongside`. Sannr does not choose a replacement relationship from prose. A bounded
 status/error-code contradiction flag can call attention to a claim; it never
 supersedes or deletes that claim.
-An exact active duplicate, or a retry of the same replacement, saves no second
-note. A historical claim can be superseded once; further corrections target
-its active replacement.
+A retry of the same replacement saves no second note. A historical claim can
+be superseded once; further corrections target its active replacement.
+
+## Confirm a note that still holds
+
+Saving the exact text of an active note again adds no note. It records a
+confirmation on the saved note: when (a precise time), by whom, and any
+`--evidence run-<id>` given with it. The receipt keeps `unchanged` (the note is
+unchanged) and adds `confirmed: true` with the note id, `last_confirmed_at`,
+`confirmations` (the count) and the `confirmation_evidence` attached. To confirm a note
+whose meaning matches your observation but whose wording does not, name it:
+
+```sh
+sannr note "GET /api/user" --confirms sha256:<full-note-digest> --evidence run-<id>
+sannr note --stack <name> --scope stack --confirms sha256:<full-note-digest>
+```
+
+A confirmation is a statement that the note was seen to hold again, not a
+check: it never changes the note's text, identity, evidence list, evidence
+class or review label, and a referenced run is shown with its attachment-time
+and current state, not added to the note's evidence. Confirming a superseded
+note refuses with `NOTE_CONFIRM_SUPERSEDED` and names its `replacement`;
+confirming a retired note refuses with `NOTE_CONFIRM_RETIRED` (a retirement
+notice is not a claim to confirm). Nothing is written in either case. `show` (JSON and `--human`, including `--history`) gives
+each full note record a `confirmation` with `written_at`, `last_confirmed_at`
+and `confirmations`, and never prints the stored record itself; each note
+record from `api_note_context` and from the topic lookup (`context search`)
+carries the same three fields. Request envelopes (`known`) do not carry these
+dates.
+
+Confirmations are stored beside the history in the target's
+`note_confirmations`, keyed by note id. Exactly this is kept per note: the
+count (at most 1,000,000), the first and the last confirmation time, the last
+author and actor, and the most recent confirmation that carried evidence (its
+time, author and run references), which a later confirmation without evidence
+does not erase. Because no history digest covers these records, each is
+validated on read (author, precise times no later than a day ahead, the count
+bound); an invalid record (or a `note_confirmations` value that is not an
+object) is reported as `NOTE_CONFIRMATION_INVALID` and not shown. The next
+valid confirmation replaces it, and its receipt says
+`discarded_invalid_confirmation: true`. A confirmation does not conflict with
+another change landing on the same operation at the same moment (another
+confirmation, a new note, a supersession, a retirement or a review): it is
+reapplied on the current state, a bounded number of times, and a note
+superseded or retired meanwhile is refused as such. Shown
+confirmations are labelled untrusted data like note text. They are not part of
+either history digest, so a confirmation leaves the history check clean and
+does not change the notes digest a write must name. 0.1.0-beta.1 reads and
+writes a store that holds them and keeps them.
 
 Successful note receipts are JSON. Add `--json` to receive refusals on stdout
 as JSON too; otherwise refusals use stderr. Exit 2 means a secret refusal,
@@ -34,7 +80,8 @@ their existing format. `show` adds `active_notes` and `note_history` with full
 identities, attribution, active and superseded records, and integrity issues.
 The human view shows active guidance first and includes retained history with
 `--history`. The HTML view collapses superseded claims. Current client delivery,
-managed pointer blocks and graph exports use the same active projection.
+the topic lookup, the note counts in managed pointer blocks and graph exports
+use the same active projection.
 Older installations may display both claims; upgrade collaborators before
 relying on authored supersession.
 
@@ -190,7 +237,8 @@ Only a run that an agent actually made and attached moves a request to run
 attached: its evidence must have a known initiator, the same operation and an
 observation time after the request. The status comes from the ledger first,
 so it also shows in a clone; open and acknowledged come from the local inbox.
-Committed managed pointer blocks keep the decision label without the status.
+Committed managed pointer blocks carry no note text or review labels; they list
+which operations have notes.
 Nothing executes because a run was requested, read or acknowledged; the agent
 runs through the shared client under existing policy.
 
@@ -478,7 +526,7 @@ object to its provenance: `source`, optional `commit`, `at` (the import day),
 runs, `evidence_count`. The author's evidence references themselves are not
 imported. It is covered by the note identity
 like the rest of the provenance. Read models add `imported` beside `basis` and
-`author`; the human view and managed blocks append `imported from "<source>" at
+`author`; the human view and the topic lookup append `imported from "<source>" at
 commit <id> on <date>`. The knowledge file's root gains `imported_from` with the
 source, source stack, optional ref and commit, and the first and latest import
 dates. Both fields are additive. A client older than this field reads the file

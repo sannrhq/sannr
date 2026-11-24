@@ -24,7 +24,8 @@ registration for each detected host (`.mcp.json` for Claude Code,
 `.codex/config.toml` for Codex; Cursor needs an existing `.cursor/` directory),
 the three skills under `.sannr/skills/`, `.claude/skills/` and
 `.agents/skills/`, a pointer block in `AGENTS.md`, a `CLAUDE.md` that imports it
-(an existing `CLAUDE.md` gets the same block instead), and `.sannr/README.md`,
+(an existing `CLAUDE.md` gets the same block instead, unless it already has an
+`@AGENTS.md` import line), and `.sannr/README.md`,
 `.sannr/.gitignore` and `.sannr/layout.json`. It ends with:
 
 ```
@@ -150,7 +151,9 @@ Its `context_capture` is `limited` with `CONTRACT_NOT_BOUND`: without a
 contract the response is kept as private evidence, and nothing structural is
 promoted into the shared knowledge file. The note is the shared part. `note`
 prints the note's digest and file, and updates the `AGENTS.md` pointer block
-with a **Known gotchas** line so the next agent reads it before calling. `show`
+to list that operation as having a note (the note's text stays in the knowledge
+file; the next agent gets it with a request to that operation, or with
+`context search`). `show`
 prints the note with its author, date and evidence class (`written`: an
 authored claim, not an observed or asserted fact).
 

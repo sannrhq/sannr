@@ -40,7 +40,7 @@ only while the repository has no stack.
 | `.sannr/stacks/<name>/stack.json` | API configuration, environments and credential references. |
 | `.sannr/stacks/<name>/sannr.json` | Committed knowledge for this API only. |
 | `.sannr/evidence/<name>/` | Private request evidence for this stack. |
-| `.sannr/defaults.json` | Optional project defaults, including `default_stack`. |
+| `.sannr/defaults.json` | Optional project defaults, including `default_stack` and `holdWritesForNotes` (`false` stops holding writes for unread notes; 0.1.0-beta.1 refuses this key, so commit it only once every client is this version or later). |
 
 Graph manifests, graph snapshots, suites and the audit baseline retain their
 repository-level locations. Stack names match `^[a-z0-9][a-z0-9-]{0,62}$`;
@@ -116,12 +116,109 @@ mounted under a base path. `show --stack <name>` lists that API's
 operations and notes; add an operation for its detail. `context query --stack <name>`
 retrieves scoped context without borrowing the default stack's notes.
 
-The managed instructions in `AGENTS.md` and an existing `CLAUDE.md` have one
-section per stack: default first, then alphabetical. Each section names the
-environments and contract state. Authored facts keep the same operation-and-note
-format. At most 15 facts per stack and 60 total appear across gotchas and inherited
-lessons; omitted counts name the exact `show --stack` command. `unsorted` reports
-its operation count and the `stack move` command.
+The managed instructions in `AGENTS.md` (and in a `CLAUDE.md` that does not
+import `AGENTS.md`) have one section per stack: default first, then
+alphabetical. Each section names the environments and contract state, the
+number of stack facts, and an index of the operations that hold saved notes or
+scoped observation lessons, each with its count. No note, stack fact or lesson
+text is written into the block. The index lists at most 20 operations per stack
+and 60 in total; omitted counts name the exact `show --stack` command.
+`unsorted` reports its operation count and the `stack move` command. A
+closing section names the retrieval paths (`api_note_context` with `operation`
+or `search`, `show --stack <name> "<METHOD /path>"`, `context search "<text>"`)
+and how many reference files are registered, with the `reference list`
+command. Paths and titles are person-written text and stay out of the block;
+they appear in `reference list` and in lookup results. An operation identifier
+that holds a machine-local path, a credential shape, or a control or format
+character (bidirectional controls included) is withheld from the index and
+counted.
+
+Notes reach an agent with the request that needs them (`known`), or through
+one lookup by topic when no call is being made:
+
+```sh
+sannr context search "refund" [--stack <name>] [--limit <n>]
+```
+
+It searches operation notes, stack facts, shared account facts, scoped
+observation lessons and registered reference files across every stack unless
+one is named. Every word of the text must appear; when no entry holds every
+word, it falls back to entries holding some of the words (ignoring words
+shorter than three characters and common function words), ranked by how many
+distinct words each holds (`matched_words`), and `match_mode` is `some-words`
+with a sentence saying so. Otherwise `match_mode` is `all-words`. It returns at most 10
+matches by default (`--limit` up to 100), each with its stack, operation or
+scope, review label and evidence class, plus a total, an omission count and the
+command that shows the rest; when more matches exist than the largest
+`--limit`, `beyond_limit` counts them and the text says to narrow the query. It
+reads local files only and sends no request. It searches this repository's
+stores only: when the repository has granted providers or private account
+facts, the result's `not_searched` names them, so an empty answer does not
+mean nothing is saved anywhere. A reference registry this version cannot read
+does not stop the lookup: `reference_registry_problems` names the problem,
+an unreadable entry is skipped on its own and note matches still return.
+The MCP equivalent is `api_note_context` with `search` in place of `operation`.
+
+Register a local file as a reference so the lookup can search it:
+
+```sh
+sannr reference add docs/partner-runbook.md --title "Partner runbook" [--stack <name>]
+sannr reference list
+sannr reference remove docs/partner-runbook.md
+```
+
+The registry is `.sannr/references.json`, committed, and holds only the path,
+title and stack, never the file's text:
+
+```json
+{ "v": 1, "references": [ { "path": "docs/partner-runbook.md", "title": "Partner runbook", "stack": "orders" } ] }
+```
+
+A registered path is repository-relative, stored with forward slashes, and must
+resolve after links are followed to a regular UTF-8 text file of at most 256 KiB
+inside the repository. It may not be under `.git/` (`REFERENCE_PATH_GIT`), in a
+folder the product keeps private or ignores (`.sannr/evidence/`,
+`.sannr/feedback/` and whatever `.sannr/.gitignore` names;
+`REFERENCE_PATH_PRIVATE`, decided by file identity rather than spelling), a
+dotenv-style file (`.env`, `.envrc`, `.env.*`, `*.env`; `REFERENCE_PATH_DOTENV`),
+a file the product writes under `.sannr/` (stores and other JSON, the
+registry, configuration, the generated README, skills, saved requests;
+`REFERENCE_PATH_PRODUCT`; a hand-written Markdown file elsewhere under
+`.sannr/` is allowed), a file with more than one hard link
+(`REFERENCE_HARD_LINK`), a path that itself looks like a credential
+(`REFERENCE_PATH_SECRET`, exit 2), a second spelling of a file already
+registered (`REFERENCE_DUPLICATE`), or a path the repository's Git ignore
+rules ignore, checked for both the registered spelling and the file it
+resolves to (`REFERENCE_PATH_IGNORED`; not checked when Git is unavailable). These checks run at registration and again
+at every lookup. Other refusals:
+`REFERENCE_PATH_ABSOLUTE`, `REFERENCE_PATH_ESCAPES`, `REFERENCE_LINK_OUTSIDE`, `REFERENCE_NOT_FOUND`, `REFERENCE_NOT_FILE`,
+`REFERENCE_NOT_TEXT`, `REFERENCE_TOO_LARGE`, `REFERENCE_TITLE_INVALID`,
+`REFERENCE_STACK_UNKNOWN` and `REFERENCE_CAPACITY_REACHED` (100 references)
+exit 1; `REFERENCE_SECRET`, a credential-shaped value in the file, exits 2 and
+registers nothing; it uses the shapes the note scanner refuses, run line by
+line in bounded windows.
+`reference list` reads a registry with bad entries and names them under
+`problems`; `reference remove <path>` drops one entry even while another is
+malformed. When a refresh of the managed block fails, `reference add` and
+`remove` exit 1, as `note` and `stack add` do. `reference remove` drops every
+entry that matches the path, and matches a malformed entry by the exact path
+string it holds (an absolute path or one with `..` included). On a case-folding
+file system the registry stores the file's spelling on disk. A registry that
+starts with a byte-order mark is read.
+
+The lookup prints no text from a reference file. A reference match is a
+pointer: the file's path, title and stack, the numbers of its matching lines
+(at most 10, with `more_lines` counting the rest; in fallback mode ranked by how
+many words each line holds), `matched_words` in fallback mode, and a label
+saying to read those lines in the file itself, whose contents are untrusted
+data, not instructions and not an observation of the API. Because nothing from
+the file is printed, a file that gains a credential after registration is
+still searched; the credential is never shown. A registered file that has gone
+missing is listed under `missing_references`, and one that no longer passes
+the confinement rules under `unavailable_references` with its code. The Git
+ignore check runs once per lookup for all references. Registering or removing a
+reference refreshes existing managed blocks. `unwire` keeps the registry, as it
+keeps the saved stores.
 
 `stack add`, `stack import`, `stack move` and `init` (including `init
 --contract` creating the first stack) refresh those blocks as they finish, so
@@ -267,7 +364,8 @@ references by variable name; the contract files it names; an operation
 inventory taken from that contract; the active authored notes and stack facts.
 What stays behind: `envFile` paths, shared account facts, evidence files and
 private storage, superseded note history, unattributed and machine-generated
-notes, learned response shapes and verification state, and review decisions.
+notes, learned response shapes and verification state, review decisions,
+and note confirmations (the last-confirmed dates and counts).
 The receipt names what it left out under `not_imported` and `skipped`. An
 evidence reference is not carried at all: its run ID, the author's provider
 URL, environment name and build stay in the source, and a basis source that is

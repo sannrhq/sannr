@@ -97,7 +97,8 @@ test('H1-03 assertions never accept inherited fields or operator names', () => {
 test('H1-04 save_to refuses a symlink above an existing parent before fetching', t => {
   probe(t, `let calls = 0; globalThis.fetch = async () => { calls++; return new Response('bytes', { headers: { 'content-type': 'application/octet-stream' } }); };
     ${clientImport}
-    await assert.rejects(apiRequest({ path: '/file', save_to: join(root, 'alias', 'nested', 'out.bin') }), { code: 'SAVE_TO_UNSAFE_PATH' });
+    const refused = await apiRequest({ path: '/file', save_to: join(root, 'alias', 'nested', 'out.bin') });
+    assert.equal(refused.error?.code, 'SAVE_TO_UNSAFE_PATH'); assert.equal(refused.mode, 'refused');
     assert.equal(calls, 0); assert.equal(fs.existsSync(join(root, 'outside', 'nested', 'out.bin')), false);`, {}, root => {
     mkdirSync(join(root, 'outside', 'nested'), { recursive: true }); unsafeAliasSync(join(root, 'outside'), join(root, 'alias'));
   });
